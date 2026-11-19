@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.conordowling.daily-rhythm-watcher</string>
+  <key>ProgramArguments</key><array><string>__HOME__/.local/bin/daily-rhythm-watcher.sh</string></array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.local/state/daily-rhythm/watcher.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.local/state/daily-rhythm/watcher.log</string>
+</dict></plist>

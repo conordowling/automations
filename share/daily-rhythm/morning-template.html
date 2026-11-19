@@ -1,0 +1,272 @@
+<title>Morning Brief</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: single reading column. Do-first strip, day plan timeline, Slack asks, then PR table, Linear by status, small footer notes. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #16202b;
+  --muted: #5d6b7a;
+  --line: #dde2e8;
+  --accent: #1d5fd1;
+  --good: #1b7f4b;
+  --good-bg: #e2f4ea;
+  --warn: #9a6200;
+  --warn-bg: #fdf0d2;
+  --bad: #b3261e;
+  --bad-bg: #fbe3e1;
+  --idle-bg: #eceff3;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151c; --surface: #172029; --fg: #e6ebf1; --muted: #93a1b0; --line: #26323e;
+    --accent: #6ea2ff; --good: #5bd08e; --good-bg: #16352a; --warn: #f0b94d; --warn-bg: #3a2c10;
+    --bad: #ff8b82; --bad-bg: #40191a; --idle-bg: #212c37; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151c; --surface: #172029; --fg: #e6ebf1; --muted: #93a1b0; --line: #26323e;
+  --accent: #6ea2ff; --good: #5bd08e; --good-bg: #16352a; --warn: #f0b94d; --warn-bg: #3a2c10;
+  --bad: #ff8b82; --bad-bg: #40191a; --idle-bg: #212c37; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap {
+  max-width: 920px; margin: 0 auto; padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 32px;
+}
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 24px; }
+h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.date { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover, a:focus-visible { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.mono { font-family: var(--font-mono); font-size: 13px; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+.stat b { display: block; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); }
+.stat.bad b { color: var(--bad); }
+
+.first { display: flex; flex-direction: column; gap: 10px; counter-reset: p; padding: 0; margin: 0; list-style: none; }
+.first li { counter-increment: p; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
+.first li::before { content: counter(p); font-family: var(--font-mono); font-weight: 500; color: var(--accent); font-size: 18px; line-height: 1.3; }
+.first .t { font-weight: 600; }
+.first .why { color: var(--muted); margin-top: 2px; }
+
+.pill { display: inline-block; font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: var(--idle-bg); color: var(--muted); white-space: nowrap; }
+.pill.good { background: var(--good-bg); color: var(--good); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; }
+th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td .sub { display: block; color: var(--muted); font-size: 13px; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.col { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; min-width: 0; }
+.col h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+.col h3 span { font-family: var(--font-mono); font-weight: 400; color: var(--muted); font-size: 13px; }
+.col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.col li { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; font-size: 14px; }
+.col li .id { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
+.col li .ti { overflow-wrap: anywhere; }
+.col li .ti em { font-style: normal; font-size: 12px; margin-left: 4px; }
+.note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+
+/* Day plan: one row per block, colored left edge by kind. */
+.plan { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.plan li { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 4px 14px; align-items: baseline; padding: 10px 14px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
+.plan li:last-child { border-bottom: 0; }
+.plan .when { font-family: var(--font-mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.plan .what { font-weight: 500; overflow-wrap: anywhere; }
+.plan .what .sub { display: block; font-weight: 400; color: var(--muted); font-size: 13px; }
+.plan li.meeting { border-left-color: var(--accent); }
+.plan li.focus { border-left-color: var(--good); }
+.plan li.admin { border-left-color: var(--warn); }
+.plan li.lunch, .plan li.buffer { background: var(--idle-bg); }
+.plan li.lunch .what, .plan li.buffer .what { color: var(--muted); font-weight: 400; }
+.plan li.conflict { border-left-color: var(--bad); }
+.wontfit { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.wontfit li { margin-top: 2px; }
+.col li.slack { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.col li.slack .src { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+@media (max-width: 480px) { .plan li { grid-template-columns: 1fr auto; } .plan .when { grid-column: 1 / -1; } }
+
+/* Tick-off: the script below appends a .tick checkbox to every [data-task] item. */
+.first li:has(.tick) { grid-template-columns: 28px minmax(0, 1fr) 22px; }
+.plan li:has(.tick) { grid-template-columns: 112px minmax(0, 1fr) auto 22px; }
+.col li.slack:has(.tick) { grid-template-columns: minmax(0, 1fr) 22px; }
+.wontfit li:has(.tick) { list-style: none; margin-left: -18px; display: grid; grid-template-columns: minmax(0, 1fr) 22px; gap: 8px; }
+.tick { grid-column: -2; grid-row: 1; justify-self: end; margin: 2px 0 0; width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
+.done > :not(.tick), .done::before { opacity: 0.5; }
+.done .t, .done .what, .done .ti, .wontfit .done > span { text-decoration: line-through; }
+.tally { float: right; font-family: var(--font-mono); font-weight: 400; text-transform: none; letter-spacing: 0; }
+@media (max-width: 480px) { .plan li:has(.tick) { grid-template-columns: 1fr auto 22px; } .plan .tick { grid-row: 2; } }
+footer { color: var(--muted); font-size: 13px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 480px) { .col li { grid-template-columns: 1fr; gap: 0; } }
+</style>
+
+<div class="wrap" data-day="2026-11-17">
+  <header>
+    <h1>Morning brief</h1>
+    <span class="date">Tuesday 2026-11-17</span>
+  </header>
+
+  <section class="stats" aria-label="Summary">
+    <div class="stat"><b>5</b><span>open PRs (work repos)</span></div>
+    <div class="stat bad"><b>1</b><span>PR with failing CI</span></div>
+    <div class="stat"><b>3</b><span>unresolved threads</span></div>
+    <div class="stat"><b>0</b><span>reviews requested of me</span></div>
+    <div class="stat"><b>0</b><span>unpushed fixer commits</span></div>
+    <div class="stat"><b>3</b><span>meetings · 2h 10m</span></div>
+    <div class="stat"><b>3h 30m</b><span>focus time planned</span></div>
+    <div class="stat"><b>2</b><span>Slack asks for me</span></div>
+  </section>
+
+  <section>
+    <h2>Do first</h2>
+    <ol class="first">
+      <li data-task="pr-92764"><div><div class="t"><a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a> · PERS-2978 · fix failing CI</div>
+        <div class="why">ValidateAppfiles, ValidateYamlUpdateTargets and Buildkite build #311723 are red. Its sibling PR #487750 depends on it, and nothing is waiting in the fixer worktree.</div></div></li>
+      <li data-task="pr-487750"><div><div class="t"><a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">infrastructure-deployment #487750</a> · PERS-2978 · close out</div>
+        <div class="why">Four approvals and green CI. Resolve the 2 open threads and chase iam-autobot, appfile_cd and sdo-warden.</div></div></li>
+      <li data-task="pr-5546"><div><div class="t"><a href="https://github.com/klaviyo/materialized-views/pull/5546">materialized-views #5546</a> · PERS-3347 · get reviews</div>
+        <div class="why">Ready, 11/11 checks pass, no human review yet. Ask <span class="mono">prism</span> and cmshanahan-kvyo today; 1 coderabbit thread is open.</div></div></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Today's plan · 09:00–17:00 <span class="tally" data-tally=".plan"></span></h2>
+    <ol class="plan">
+      <li class="admin" data-task="slack-replies-am"><span class="when">09:00–09:30</span><span class="what">Triage: reply in Slack and resolve the 2 threads on #487750<span class="sub">Answer the PERS-2978 rollout question in #proj-prism-aia-internal first, since someone is blocked on it.</span></span><span class="pill warn">admin</span></li>
+      <li class="meeting" data-task="mtg-standup"><span class="when">09:30–09:45</span><span class="what">PRISM standup</span><span class="pill">meeting</span></li>
+      <li class="focus" data-task="pr-92764"><span class="when">09:45–11:30</span><span class="what">Get <a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a> green<span class="sub">Fix ValidateAppfiles and ValidateYamlUpdateTargets, then rerun Buildkite. Unblocks #487750.</span></span><span class="pill good">focus</span></li>
+      <li class="buffer" data-task="prep-pers-3347"><span class="when">11:30–11:35</span><span class="what">Prep: skim the PERS-3347 grading results</span><span class="pill">buffer</span></li>
+      <li class="meeting" data-task="mtg-grading-sync"><span class="when">11:35–12:00</span><span class="what">Content grading sync<span class="sub">Bring the #5546 review ask.</span></span><span class="pill">meeting</span></li>
+      <li class="lunch"><span class="when">12:00–13:00</span><span class="what">Lunch</span><span class="pill">lunch</span></li>
+      <li class="meeting" data-task="mtg-planning"><span class="when">13:00–14:30</span><span class="what">Personalization planning (tentative, not yet answered)</span><span class="pill warn">tentative</span></li>
+      <li class="focus" data-task="pers-3284"><span class="when">14:30–16:15</span><span class="what">PERS-3284: get the DynamoDB cutover drafts ready for review<span class="sub">airflow-dags #4133 and infra-deploy #497182: finish the shadow group, mark both ready.</span></span><span class="pill good">focus</span></li>
+      <li class="admin" data-task="admin-pm"><span class="when">16:15–17:00</span><span class="what">Close out <a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">#487750</a>, chase #5546 reviewers, update Linear statuses</span><span class="pill warn">admin</span></li>
+    </ol>
+    <ul class="wontfit"><li data-task="pers-2657"><span>Won't fit today: PERS-2657 reusable DynamoDB client (idle since 10-20). Suggest Thursday morning, which has a 3h free block.</span></li></ul>
+  </section>
+
+  <section>
+    <h2>Slack · since yesterday 09:00</h2>
+    <div class="cols">
+      <div class="col"><h3>Needs a reply from me <span>2</span></h3><ul>
+        <li class="slack" data-task="slack-aia-pers-2978"><span class="src">#proj-prism-aia-internal</span><span class="ti">Asked when the PERS-2978 profile refresh will be live in prod. Someone is blocked on it. <em class="pill bad">reply</em></span></li>
+        <li class="slack" data-task="slack-dm-5546"><span class="src">DM</span><span class="ti">Asked whether #5546 can scope runs to a single company for the eval. <em class="pill bad">reply</em></span></li>
+      </ul></div>
+      <div class="col"><h3>FYI <span>2</span></h3><ul>
+        <li class="slack"><span class="src">#content-personalization-prism-dev-team</span><span class="ti">Decided to keep the sms_v1 grader at v3 through BFCM.</span></li>
+        <li class="slack"><span class="src">#proj-prism-sms-content-personalization</span><span class="ti">Quiet apart from deploy notices.</span></li>
+      </ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>My open PRs</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>PR</th><th>Ticket</th><th>State</th><th>CI</th><th>Review</th><th>Threads</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a><span class="sub">bump refresh flow image tags</span></td><td class="mono">PERS-2978</td><td><span class="pill">draft</span></td><td><span class="pill bad">3 failing</span></td><td><span class="pill">required</span></td><td class="num">0</td></tr>
+          <tr><td><a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">infra-deploy #487750</a><span class="sub">PRISM profile refresh Prefect deployment</span></td><td class="mono">PERS-2978</td><td><span class="pill good">ready</span></td><td><span class="pill good">16 pass</span></td><td><span class="pill good">approved</span></td><td class="num">2</td></tr>
+          <tr><td><a href="https://github.com/klaviyo/materialized-views/pull/5546">materialized-views #5546</a><span class="sub">content_grading: scope a run to AA/CDP companies</span></td><td class="mono">PERS-3347</td><td><span class="pill good">ready</span></td><td><span class="pill good">11 pass</span></td><td><span class="pill warn">required</span></td><td class="num">1</td></tr>
+          <tr><td><a href="https://github.com/klaviyo/airflow-dags/pull/4133">airflow-dags #4133</a><span class="sub">DynamoDB ingestor shadow group in profile_buckets</span></td><td class="mono">PERS-3284</td><td><span class="pill">draft</span></td><td><span class="pill good">12 pass</span></td><td><span class="pill">none yet</span></td><td class="num">0</td></tr>
+          <tr><td><a href="https://github.com/klaviyo/infrastructure-deployment/pull/497182">infra-deploy #497182</a><span class="sub">prism-bucket-dynamodb output ingestor targets</span></td><td class="mono">PERS-3284</td><td><span class="pill">draft</span></td><td><span class="pill good">13 pass</span></td><td><span class="pill">none yet</span></td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Also open: claudius-maximus #14, a personal repo PR from April (not checked).</p>
+  </section>
+
+  <section>
+    <h2>Linear · assigned to me, not done</h2>
+    <div class="cols">
+      <div class="col"><h3>In Review <span>3</span></h3><ul>
+        <li><span class="id">PERS-3347</span><span class="ti">content_grading scope <em class="pill good">PR #5546</em></span></li>
+        <li><span class="id">PERS-2978</span><span class="ti">Scheduled profile feature store refresh <em class="pill good">2 PRs</em></span></li>
+        <li><span class="id">PERS-3233</span><span class="ti">Replace buckets gRPC with direct DynamoDB client <em class="pill warn">no open PR</em></span></li>
+      </ul></div>
+      <div class="col"><h3>In Progress <span>5</span></h3><ul>
+        <li><span class="id">PERS-3329</span><span class="ti">Profile refresh CI bumps <em class="pill warn">no PR</em></span></li>
+        <li><span class="id">PERS-3328</span><span class="ti">Deploy the Prefect flow <em class="pill warn">no PR</em></span></li>
+        <li><span class="id">PERS-2757</span><span class="ti">Bucket assignments gRPC service <em class="pill warn">no PR</em></span></li>
+        <li><span class="id">PERS-2657</span><span class="ti">Reusable DynamoDB client <em class="pill warn">no PR</em> <em class="pill">idle since 10-20</em></span></li>
+        <li><span class="id">PERS-2759</span><span class="ti">gRPC service infrastructure <em class="pill warn">no PR</em> <em class="pill">idle since 10-20</em></span></li>
+      </ul></div>
+      <div class="col"><h3>Backlog <span>12</span></h3><ul>
+        <li><span class="id">PERS-3284</span><span class="ti">Cut ingestion over to DynamoDB <em class="pill good">2 draft PRs</em></span></li>
+        <li><span class="id">PERS-3330</span><span class="ti">Merge and deploy ingestor targets and IAM</span></li>
+        <li><span class="id">PERS-3331</span><span class="ti">Merge profile_buckets shadow run</span></li>
+        <li><span class="id">PERS-3282</span><span class="ti">Delete retired prism-buckets-service infra</span></li>
+        <li><span class="id">+ 8 more</span><span class="ti">No PRs: PERS-2566, 2373, 2796, 2648, 2525, 2783, 2558, 2371</span></li>
+      </ul></div>
+    </div>
+    <p class="note">No due dates on active issues. No new comments in the last 24h (only PERS-3347 was updated recently, and it has none). PR links are matched by ticket id in titles, not Linear attachments.</p>
+  </section>
+
+  <section>
+    <h2>Reviews and fixer worktrees</h2>
+    <div class="cols">
+      <div class="col"><h3>Review requests <span>0</span></h3><p class="note" style="margin:0">Nothing is directly requested of me.</p></div>
+      <div class="col"><h3>Fixer worktrees <span>1</span></h3><p class="note" style="margin:0"><span class="mono">k-repo-92764</span> is clean with no unpushed commits. Its last commit was 5 days ago, so nothing is waiting for a push.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Sources: Linear MCP (ok), GitHub via <span class="mono">gh</span> CLI (the GitHub MCP server failed to connect), Google Calendar via Runlayer (ok, 1 declined event skipped), Slack via Runlayer (ok, 3 channels plus DMs and mentions).</span>
+    <span>Read-only run. Nothing was pushed, posted or edited.</span>
+  </footer>
+</div>
+
+<script>
+/* Tick-off: adds a checkbox to every [data-task] item. State is kept per day in
+   localStorage as brief:<day>:<id>, and items sharing an id tick together. */
+(function () {
+  var day = document.querySelector('.wrap').dataset.day;
+  var key = function (id) { return 'brief:' + day + ':' + id; };
+  var load = function (id) { try { return localStorage.getItem(key(id)) === '1'; } catch (e) { return false; } };
+  var save = function (id, on) {
+    try { if (on) localStorage.setItem(key(id), '1'); else localStorage.removeItem(key(id)); } catch (e) {}
+  };
+  var items = Array.prototype.slice.call(document.querySelectorAll('[data-task]'));
+
+  function render(id, on) {
+    items.forEach(function (li) {
+      if (li.dataset.task !== id) return;
+      li.classList.toggle('done', on);
+      li.querySelector('.tick').checked = on;
+    });
+    document.querySelectorAll('[data-tally]').forEach(function (el) {
+      var scoped = document.querySelectorAll(el.dataset.tally + ' [data-task]');
+      var done = document.querySelectorAll(el.dataset.tally + ' [data-task].done').length;
+      el.textContent = done + '/' + scoped.length + ' done';
+    });
+  }
+
+  items.forEach(function (li) {
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'tick';
+    box.setAttribute('aria-label', 'Mark done: ' + li.textContent.replace(/\s+/g, ' ').trim().slice(0, 80));
+    box.addEventListener('change', function () { save(li.dataset.task, box.checked); render(li.dataset.task, box.checked); });
+    li.appendChild(box);
+  });
+  items.forEach(function (li) { render(li.dataset.task, load(li.dataset.task)); });
+})();
+</script>
