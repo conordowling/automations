@@ -5,7 +5,7 @@ the PR watchers. Each one opens a Claude session in a cmux workspace.
 
 | Agent | Runs | Script |
 |---|---|---|
-| `daily-rhythm-watcher` | every 10 min; morning brief from 08:00, end-of-day report from 16:30, weekdays, when I'm at the machine | `bin/daily-rhythm-watcher.sh` → `bin/daily-brief-session.sh` |
+| `daily-rhythm-watcher` | every 10 min, when I'm at the machine: morning brief from 08:00 and end-of-day report from 16:30 on weekdays; PRISM weekly update from 09:30 on Fridays (drafts it, posts to the thread only after I approve) | `bin/daily-rhythm-watcher.sh` → `bin/daily-brief-session.sh` |
 | `pr-authored-watcher` | every 5 min | `bin/pr-authored-watcher.sh` |
 | `pr-review-watcher` | every 5 min | `bin/pr-review-watcher.sh` |
 | `pr-fixer-watcher` | every 5 min | `bin/pr-fixer-watcher.sh` |
