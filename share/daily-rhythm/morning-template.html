@@ -2,7 +2,7 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-/* Layout: single reading column. Do-first strip, day plan timeline, Slack asks, then PR table, Linear by status, small footer notes. */
+/* Layout: single reading column. Today's outcomes, day plan timeline, Slack asks, then PR table, Linear by status, small footer notes. */
 :root {
   --bg: #f6f7f9;
   --surface: #ffffff;
@@ -55,11 +55,13 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-
 .stat span { font-size: 12px; color: var(--muted); }
 .stat.bad b { color: var(--bad); }
 
-.first { display: flex; flex-direction: column; gap: 10px; counter-reset: p; padding: 0; margin: 0; list-style: none; }
-.first li { counter-increment: p; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
-.first li::before { content: counter(p); font-family: var(--font-mono); font-weight: 500; color: var(--accent); font-size: 18px; line-height: 1.3; }
-.first .t { font-weight: 600; }
-.first .why { color: var(--muted); margin-top: 2px; }
+/* Outcomes: the day's top 3 end states, each with a done-when line and the plan times that deliver it. */
+.outcomes { display: flex; flex-direction: column; gap: 10px; counter-reset: p; padding: 0; margin: 0; list-style: none; }
+.outcomes li { counter-increment: p; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
+.outcomes li::before { content: counter(p); font-family: var(--font-mono); font-weight: 500; color: var(--accent); font-size: 18px; line-height: 1.3; }
+.outcomes .t { font-weight: 600; }
+.outcomes .when-done { color: var(--muted); margin-top: 2px; }
+.outcomes .at { font-family: var(--font-mono); font-size: 12px; color: var(--accent); white-space: nowrap; }
 
 .pill { display: inline-block; font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: var(--idle-bg); color: var(--muted); white-space: nowrap; }
 .pill.good { background: var(--good-bg); color: var(--good); }
@@ -98,6 +100,9 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .plan li.lunch, .plan li.buffer { background: var(--idle-bg); }
 .plan li.lunch .what, .plan li.buffer .what { color: var(--muted); font-weight: 400; }
 .plan li.conflict { border-left-color: var(--bad); }
+/* P1-P3 mark the blocks that deliver the outcomes; .why says which priority rule put them there. */
+.plan .prio { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--accent); margin-right: 6px; }
+.plan .why { display: block; font-weight: 400; color: var(--fg); font-size: 13px; margin-top: 2px; }
 .wontfit { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
 .wontfit li { margin-top: 2px; }
 .col li.slack { grid-template-columns: minmax(0, 1fr); gap: 2px; }
@@ -105,7 +110,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 @media (max-width: 480px) { .plan li { grid-template-columns: 1fr auto; } .plan .when { grid-column: 1 / -1; } }
 
 /* Tick-off: the script below appends a .tick checkbox to every [data-task] item. */
-.first li:has(.tick) { grid-template-columns: 28px minmax(0, 1fr) 22px; }
+.outcomes li:has(.tick) { grid-template-columns: 28px minmax(0, 1fr) 22px; }
 .plan li:has(.tick) { grid-template-columns: 112px minmax(0, 1fr) auto 22px; }
 .col li.slack:has(.tick) { grid-template-columns: minmax(0, 1fr) 22px; }
 .wontfit li:has(.tick) { list-style: none; margin-left: -18px; display: grid; grid-template-columns: minmax(0, 1fr) 22px; gap: 8px; }
@@ -136,14 +141,14 @@ footer { color: var(--muted); font-size: 13px; display: flex; flex-direction: co
   </section>
 
   <section>
-    <h2>Do first</h2>
-    <ol class="first">
-      <li data-task="pr-92764"><div><div class="t"><a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a> · PERS-2978 · fix failing CI</div>
-        <div class="why">ValidateAppfiles, ValidateYamlUpdateTargets and Buildkite build #311723 are red. Its sibling PR #487750 depends on it, and nothing is waiting in the fixer worktree.</div></div></li>
-      <li data-task="pr-487750"><div><div class="t"><a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">infrastructure-deployment #487750</a> · PERS-2978 · close out</div>
-        <div class="why">Four approvals and green CI. Resolve the 2 open threads and chase iam-autobot, appfile_cd and sdo-warden.</div></div></li>
-      <li data-task="pr-5546"><div><div class="t"><a href="https://github.com/klaviyo/materialized-views/pull/5546">materialized-views #5546</a> · PERS-3347 · get reviews</div>
-        <div class="why">Ready, 11/11 checks pass, no human review yet. Ask <span class="mono">prism</span> and cmshanahan-kvyo today; 1 coderabbit thread is open.</div></div></li>
+    <h2>Today's outcomes <span class="tally" data-tally=".outcomes"></span></h2>
+    <ol class="outcomes">
+      <li data-task="pr-92764"><div><div class="t">The profile refresh deployment is unblocked (PERS-2978)</div>
+        <div class="when-done">Done when <a href="https://github.com/klaviyo/k-repo/pull/92764">#92764</a> is green and <a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">#487750</a> has nothing left but the bot approvals. <span class="at">→ 09:45</span></div></div></li>
+      <li data-task="pers-3284"><div><div class="t">The DynamoDB cutover is ready for review (PERS-3284)</div>
+        <div class="when-done">Done when airflow-dags #4133 and infra-deploy #497182 are out of draft with the shadow group finished. <span class="at">→ 14:30</span></div></div></li>
+      <li data-task="outcome-5546"><div><div class="t">materialized-views #5546 has human reviewers (PERS-3347)</div>
+        <div class="when-done">Done when <span class="mono">prism</span> or cmshanahan-kvyo has picked it up and the coderabbit thread is resolved. <span class="at">→ 11:35 · 16:15</span></div></div></li>
     </ol>
   </section>
 
@@ -152,13 +157,13 @@ footer { color: var(--muted); font-size: 13px; display: flex; flex-direction: co
     <ol class="plan">
       <li class="admin" data-task="slack-replies-am"><span class="when">09:00–09:30</span><span class="what">Triage: reply in Slack and resolve the 2 threads on #487750<span class="sub">Answer the PERS-2978 rollout question in #proj-prism-aia-internal first, since someone is blocked on it.</span></span><span class="pill warn">admin</span></li>
       <li class="meeting" data-task="mtg-standup"><span class="when">09:30–09:45</span><span class="what">PRISM standup</span><span class="pill">meeting</span></li>
-      <li class="focus" data-task="pr-92764"><span class="when">09:45–11:30</span><span class="what">Get <a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a> green<span class="sub">Fix ValidateAppfiles and ValidateYamlUpdateTargets, then rerun Buildkite. Unblocks #487750.</span></span><span class="pill good">focus</span></li>
+      <li class="focus" data-task="pr-92764"><span class="when">09:45–11:30</span><span class="what"><span class="prio">P1</span>Get <a href="https://github.com/klaviyo/k-repo/pull/92764">k-repo #92764</a> green<span class="why">Failing CI that blocks a merge: #487750 has four approvals and is waiting on it.</span><span class="sub">Fix ValidateAppfiles and ValidateYamlUpdateTargets, then rerun Buildkite. Unblocks #487750.</span></span><span class="pill good">focus</span></li>
       <li class="buffer" data-task="prep-pers-3347"><span class="when">11:30–11:35</span><span class="what">Prep: skim the PERS-3347 grading results</span><span class="pill">buffer</span></li>
       <li class="meeting" data-task="mtg-grading-sync"><span class="when">11:35–12:00</span><span class="what">Content grading sync<span class="sub">Bring the #5546 review ask.</span></span><span class="pill">meeting</span></li>
       <li class="lunch"><span class="when">12:00–13:00</span><span class="what">Lunch</span><span class="pill">lunch</span></li>
       <li class="meeting" data-task="mtg-planning"><span class="when">13:00–14:30</span><span class="what">Personalization planning (tentative, not yet answered)</span><span class="pill warn">tentative</span></li>
-      <li class="focus" data-task="pers-3284"><span class="when">14:30–16:15</span><span class="what">PERS-3284: get the DynamoDB cutover drafts ready for review<span class="sub">airflow-dags #4133 and infra-deploy #497182: finish the shadow group, mark both ready.</span></span><span class="pill good">focus</span></li>
-      <li class="admin" data-task="admin-pm"><span class="when">16:15–17:00</span><span class="what">Close out <a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">#487750</a>, chase #5546 reviewers, update Linear statuses</span><span class="pill warn">admin</span></li>
+      <li class="focus" data-task="pers-3284"><span class="when">14:30–16:15</span><span class="what"><span class="prio">P2</span>PERS-3284: get the DynamoDB cutover drafts ready for review<span class="why">In Progress work, and the longest free gap of the day.</span><span class="sub">airflow-dags #4133 and infra-deploy #497182: finish the shadow group, mark both ready.</span></span><span class="pill good">focus</span></li>
+      <li class="admin" data-task="admin-pm"><span class="when">16:15–17:00</span><span class="what"><span class="prio">P3</span>Close out <a href="https://github.com/klaviyo/infrastructure-deployment/pull/487750">#487750</a>, chase #5546 reviewers, update Linear statuses<span class="why">PR close to merging: #5546 is green and only needs a human review.</span></span><span class="pill warn">admin</span></li>
     </ol>
     <ul class="wontfit"><li data-task="pers-2657"><span>Won't fit today: PERS-2657 reusable DynamoDB client (idle since 10-20). Suggest Thursday morning, which has a 3h free block.</span></li></ul>
   </section>
