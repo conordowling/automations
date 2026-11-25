@@ -1,12 +1,14 @@
 #!/bin/bash
 # Prints repos/worktrees under ~/Klaviyo/Repos with uncommitted changes or
-# commits that exist on no remote. Read-only.
+# commits that exist on no remote. Only repos with a github.com/klaviyo remote
+# are considered. Read-only.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 REPOS_DIR="$HOME/Klaviyo/Repos"
 seen=""
 exec 2>/dev/null
 for repo in "$REPOS_DIR"/*/; do
   [ -e "$repo/.git" ] || continue
+  git -C "$repo" remote -v | grep -qiE 'github\.com[:/]klaviyo/' || continue
   # Only main checkouts: worktree list from a main repo covers its worktrees.
   git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}' | while read -r wt; do
     [ -d "$wt" ] || continue
