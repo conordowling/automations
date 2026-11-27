@@ -6,6 +6,8 @@ with an ETag (cmux's WebKit browser buffers server-sent events). Bound to 127.0.
 Env: INBOX_PORT (8765), INBOX_DB (~/.local/state/inbox/inbox.db).
 """
 import hashlib
+import hmac
+import secrets
 import json
 import os
 import re
@@ -28,6 +30,10 @@ WATCHER_WS = {kind: Path.home() / f".local/state/pr-{kind}-watcher/workspaces"
               for kind in ("authored", "review", "fixer")}
 DONE_HIDE_AFTER = timedelta(days=3)
 ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
+ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
+BIN = Path(__file__).resolve().parent
+CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+STARTERS = {"self-review": "pr-authored-watcher", "fixer": "pr-fixer-watcher", "review": "pr-review-watcher"}
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
 
 SCHEMA = """
@@ -49,7 +55,7 @@ create table if not exists meta (key text primary key, value text);
 """
 # Columns added after the first release; migrate() adds any an existing db lacks.
 PR_EXTRA_COLUMNS = {"bot_unresolved": "integer", "fixer_state": "text", "fixer_ahead": "integer",
-                    "workspaces": "text"}
+                    "workspaces": "text", "threads_checked_at": "text", "threads_seen_updated_at": "text"}
 
 
 def migrate(db):
@@ -95,16 +101,21 @@ def add_event(db, workstream, pr_ref, source, text):
 TICKET = re.compile(r"^\[?([A-Z][A-Z0-9]*-\d+)\]?")
 TICKET_PREFIX = re.compile(r"^\[?[A-Z][A-Z0-9]*-[A-Z0-9]+\]?:?\s*")
 
+# GraphQL charges by how many nodes a query could return, so the searches skip review
+# threads (with them, one poll cost ~300 of the 5,000 points an hour). Threads are fetched
+# separately, only for PRs that changed (THREADS_QUERY), at about 1 point per PR.
 PR_FIELDS = """... on PullRequest { number title url isDraft state createdAt updatedAt mergedAt
   additions deletions reviewDecision headRefOid author { login } repository { nameWithOwner }
-  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-  reviewThreads(first: 100) { nodes { isResolved isOutdated
-    comments(last: 1) { nodes { author { login __typename } } } } } }"""
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"""
 GH_QUERY = """query($open: String!, $merged: String!, $reviews: String!) {
-  open: search(query: $open, type: ISSUE, first: 100) { nodes { %s } }
-  merged: search(query: $merged, type: ISSUE, first: 100) { nodes { %s } }
-  reviews: search(query: $reviews, type: ISSUE, first: 100) { nodes { %s } }
-  rateLimit { remaining resetAt } }""" % (PR_FIELDS, PR_FIELDS, PR_FIELDS)
+  open: search(query: $open, type: ISSUE, first: 50) { nodes { %s } }
+  merged: search(query: $merged, type: ISSUE, first: 30) { nodes { %s } }
+  reviews: search(query: $reviews, type: ISSUE, first: 30) { nodes { %s } }
+  rateLimit { cost remaining resetAt } }""" % (PR_FIELDS, PR_FIELDS, PR_FIELDS)
+THREADS_FIELDS = """reviewThreads(first: 100) { nodes { isResolved isOutdated
+  comments(last: 1) { nodes { author { login __typename } } } } }"""
+THREADS_BATCH = 20
+THREADS_MAX_AGE = timedelta(minutes=15)  # resolving a thread may not change a PR's updatedAt
 
 
 def gh(*args):
@@ -125,10 +136,10 @@ def workstream_key(pr):
     return f"pr:{pr['repository']['nameWithOwner'].split('/')[1]}#{pr['number']}"
 
 
-def open_threads(pr, login):
+def open_threads(threads, login):
     """Unresolved, current threads whose last reply isn't mine, as (human, bot) counts."""
     human = bot = 0
-    for t in pr["reviewThreads"]["nodes"]:
+    for t in threads:
         last = (t["comments"]["nodes"] or [{}])[0].get("author") or {}
         if t["isResolved"] or t["isOutdated"] or last.get("login") == login:
             continue
@@ -139,8 +150,7 @@ def open_threads(pr, login):
     return human, bot
 
 
-def pr_row(pr, login):
-    human, bot = open_threads(pr, login)
+def pr_row(pr):
     commits = pr["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
     repo_full = pr["repository"]["nameWithOwner"]
@@ -155,8 +165,6 @@ def pr_row(pr, login):
         "is_draft": int(pr["isDraft"]),
         "ci": (rollup or {}).get("state") or "NONE",
         "review_decision": pr["reviewDecision"] or "",
-        "unresolved": human,
-        "bot_unresolved": bot,
         "additions": pr["additions"],
         "deletions": pr["deletions"],
         "head_oid": pr["headRefOid"],
@@ -181,9 +189,6 @@ def pr_events(old, new):
         out.append(f"CI {CI_WORDS[new['ci']]}")
     if new["review_decision"] != old["review_decision"] and new["review_decision"]:
         out.append(new["review_decision"].replace("_", " ").lower())
-    if new["unresolved"] > old["unresolved"]:
-        n = new["unresolved"] - old["unresolved"]
-        out.append(f"{n} new unresolved thread{'s' if n > 1 else ''}")
     if old["is_draft"] and not new["is_draft"] and new["state"] == "open":
         out.append("marked ready for review")
     return out
@@ -200,7 +205,7 @@ def poll_github(db, login):
     if "errors" in data:
         raise RuntimeError(data["errors"][0].get("message", "GraphQL error"))
     d = data["data"]
-    mine = [pr_row(p, login) for p in d["open"]["nodes"] + d["merged"]["nodes"] if p]
+    mine = [pr_row(p) for p in d["open"]["nodes"] + d["merged"]["nodes"] if p]
     seen = {r["ref"] for r in mine}
     first_run = db.execute("select count(*) from prs").fetchone()[0] == 0
 
@@ -237,9 +242,43 @@ def poll_github(db, login):
         db.execute("insert into reviews values (?,?,?,?,?,?,?,?,?)", (
             ref, repo_full, p["number"], p["title"], p["url"], (p["author"] or {}).get("login", ""),
             p["createdAt"], p["additions"], p["deletions"]))
-    set_meta(db, gh_synced_at=now(), gh_error="", gh_error_since="", gh_failures="0")
     db.execute("commit")
+    poll_threads(db, login, first_run)
+    set_meta(db, gh_synced_at=now(), gh_error="", gh_error_since="", gh_failures="0")
     return d["rateLimit"]
+
+
+def poll_threads(db, login, first_run):
+    """Refresh thread counts for open PRs that changed since their last check, or whose
+    counts are older than THREADS_MAX_AGE."""
+    stale = (datetime.now(timezone.utc) - THREADS_MAX_AGE).isoformat()
+    due = db.execute(
+        "select ref, repo_full, num, workstream, unresolved from prs where state = 'open' and "
+        "(threads_checked_at is null or threads_checked_at < ? or threads_seen_updated_at is not updated_at)",
+        (stale,)).fetchall()
+    for i in range(0, len(due), THREADS_BATCH):
+        batch = due[i:i + THREADS_BATCH]
+        parts = [f'p{n}: repository(owner: {json.dumps(pr["repo_full"].split("/")[0])}, '
+                 f'name: {json.dumps(pr["repo_full"].split("/")[1])}) '
+                 f'{{ pullRequest(number: {pr["num"]}) {{ updatedAt {THREADS_FIELDS} }} }}'
+                 for n, pr in enumerate(batch)]
+        data = json.loads(gh("api", "graphql", "-f", "query={ %s }" % " ".join(parts)))
+        if "errors" in data and not data.get("data"):
+            raise RuntimeError(data["errors"][0].get("message", "GraphQL error"))
+        db.execute("begin")
+        for n, pr in enumerate(batch):
+            node = ((data.get("data") or {}).get(f"p{n}") or {}).get("pullRequest")
+            if not node:
+                continue
+            human, bot = open_threads(node["reviewThreads"]["nodes"], login)
+            if not first_run and pr["unresolved"] is not None and human > pr["unresolved"]:
+                k = human - pr["unresolved"]
+                add_event(db, pr["workstream"], pr["ref"], "github",
+                          f"{k} new unresolved thread{'s' if k > 1 else ''}")
+            db.execute("update prs set unresolved = ?, bot_unresolved = ?, threads_checked_at = ?, "
+                       "threads_seen_updated_at = ? where ref = ?",
+                       (human, bot, now(), node["updatedAt"], pr["ref"]))
+        db.execute("commit")
 
 
 def github_loop():
@@ -383,14 +422,26 @@ def short_names():
     return dict(l.split()[:2] for l in lines if l.strip() and not l.startswith("#") and len(l.split()) > 1)
 
 
+def is_snoozed(db, w):
+    """'t:<iso>' hides until that time; 'c:<iso>' hides until a new event after it."""
+    until = w["snoozed_until"] or ""
+    if until.startswith("t:"):
+        return until[2:] > now()
+    if until.startswith("c:"):
+        return db.execute("select 1 from events where workstream = ? and created_at > ?",
+                          (w["key"], until[2:])).fetchone() is None
+    return False
+
+
 def state(db):
     prs = {}
     for p in db.execute("select * from prs order by num"):
         prs.setdefault(p["workstream"], []).append(dict(p))
     cutoff = (datetime.now(timezone.utc) - DONE_HIDE_AFTER).isoformat()
     workstreams = []
-    for w in db.execute("select * from workstreams where archived = 0 order by updated_at desc"):
+    for w in db.execute("select * from workstreams order by updated_at desc"):
         w = dict(w)
+        w["snoozed"] = is_snoozed(db, w)
         w["prs"] = prs.get(w["key"], [])
         w["bucket"] = bucket(w["prs"])
         if w["bucket"] == "done" and (w["updated_at"] or "") < cutoff:
@@ -413,6 +464,104 @@ def state(db):
             "inbox_events": inbox_events, "short_names": short_names()}
 
 
+# --- Actions (POST /api/<name>, token-checked) ---------------------------------------------
+
+def token():
+    path = DB.parent / "token"
+    try:
+        return path.read_text().strip()
+    except OSError:
+        t = secrets.token_urlsafe(32)
+        path.write_text(t)
+        path.chmod(0o600)
+        return t
+
+
+TOKEN = None
+
+
+def cmux(*args):
+    env = dict(os.environ, CMUX_QUIET="1")
+    try:
+        env["CMUX_SOCKET_PATH"] = (Path.home() / "Library/Application Support/cmux/last-socket-path").read_text().strip()
+    except OSError:
+        pass
+    return subprocess.run([CMUX, *args], capture_output=True, text=True, timeout=15, env=env)
+
+
+def pr_target(db, ref):
+    """(owner/repo, num, workspaces) for one of my PRs or a review request, by repo#num."""
+    row = db.execute("select repo_full, num, workspaces from prs where ref = ?", (ref,)).fetchone()
+    if row:
+        return row["repo_full"], row["num"], json.loads(row["workspaces"] or "{}")
+    row = db.execute("select repo_full, num from reviews where ref = ?", (ref,)).fetchone()
+    if row:
+        key = row["repo_full"].replace("/", "__") + f"__{row['num']}"
+        try:
+            ws = {"review": (WATCHER_WS["review"] / key).read_text().strip()}
+        except OSError:
+            ws = {}
+        return row["repo_full"], row["num"], ws
+    raise ValueError(f"unknown PR {ref}")
+
+
+def act_focus(db, body):
+    _, _, ws = pr_target(db, body["ref"])
+    for kind in ([body["kind"]] if body.get("kind") else ["fixer", "authored", "review"]):
+        if ws.get(kind):
+            out = cmux("workspace", "select", ws[kind])
+            if out.returncode == 0:
+                return f"focused the {kind} workspace"
+    raise ValueError("no open workspace for this PR")
+
+
+def act_start(db, body):
+    script = STARTERS.get(body.get("kind"))
+    if not script:
+        raise ValueError("kind must be self-review, fixer or review")
+    repo_full, num, _ = pr_target(db, body["ref"])
+    log_path = Path.home() / f".local/state/{script}/watcher.log"
+    with open(log_path, "a") as out:
+        subprocess.Popen([str(BIN / f"{script}.sh"), "--only", f"{repo_full}#{num}"],
+                         stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    return f"starting {body['kind']}…"
+
+
+def workstream_arg(db, body):
+    key = body.get("workstream", "")
+    if not db.execute("select 1 from workstreams where key = ?", (key,)).fetchone():
+        raise ValueError(f"unknown workstream {key}")
+    return key
+
+
+def act_read(db, body):
+    if body.get("all"):
+        db.execute("update events set read = 1 where read = 0")
+        return "marked everything read"
+    db.execute("update events set read = 1 where workstream = ?", (workstream_arg(db, body),))
+    return "marked read"
+
+
+def act_snooze(db, body):
+    key, mode = workstream_arg(db, body), body.get("until")
+    value = {"day": "t:" + (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds"),
+             "change": "c:" + now(), "off": None}
+    if mode not in value:
+        raise ValueError("until must be day, change or off")
+    db.execute("update workstreams set snoozed_until = ? where key = ?", (value[mode], key))
+    return "unsnoozed" if mode == "off" else "snoozed"
+
+
+def act_archive(db, body):
+    on = 1 if body.get("on", True) else 0
+    db.execute("update workstreams set archived = ? where key = ?", (on, workstream_arg(db, body)))
+    return "archived" if on else "restored"
+
+
+ACTIONS = {"focus": act_focus, "start": act_start, "read": act_read, "snooze": act_snooze,
+           "archive": act_archive}
+
+
 # --- HTTP -------------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -433,11 +582,38 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        # Another site open in the browser can send requests to localhost, and some actions
+        # start Claude sessions: require our origin and the token that only our page has.
+        if not self.allowed():
+            return
+        origin = self.headers.get("Origin")
+        if (origin and origin not in ALLOWED_ORIGINS) or not hmac.compare_digest(
+                self.headers.get("X-Inbox-Token", ""), TOKEN):
+            self.send_error(403)
+            return
+        action = ACTIONS.get(self.path.removeprefix("/api/"))
+        if not action:
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        db = connect()
+        try:
+            body = json.loads(self.rfile.read(min(length, 10_000)) or b"{}")
+            result = {"ok": True, "message": action(db, body)}
+            code = 200
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
+            result, code = {"ok": False, "message": str(e)}, 400
+        finally:
+            db.close()
+        self.send(code, json.dumps(result).encode(), "application/json")
+
     def do_GET(self):
         if not self.allowed():
             return
         if self.path == "/":
-            self.send(200, (ASSETS / "index.html").read_bytes(), "text/html; charset=utf-8")
+            page = (ASSETS / "index.html").read_text().replace("__INBOX_TOKEN__", TOKEN)
+            self.send(200, page.encode(), "text/html; charset=utf-8")
         elif self.path == "/api/state":
             db = connect()
             try:
@@ -464,6 +640,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     DB.parent.mkdir(parents=True, exist_ok=True)
     migrate(connect())
+    global TOKEN
+    TOKEN = token()
     threading.Thread(target=github_loop, daemon=True).start()
     threading.Thread(target=watcher_loop, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)

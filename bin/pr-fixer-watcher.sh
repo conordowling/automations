@@ -18,6 +18,9 @@ WT_ROOT="$HOME/.local/share/pr-fixer-watcher/worktrees"
 REPOS_DIR="$HOME/Klaviyo/Repos"
 mkdir -p "$HANDLED_DIR" "$WS_DIR" "$WT_ROOT"
 
+# --only <owner/repo#num>: handle just that PR, now (the inbox's Start buttons).
+ONLY=""; [ "${1:-}" = "--only" ] && ONLY=${2:-}
+
 log() { echo "$(date '+%F %T') $*"; }
 
 # Add an update to the inbox (bin/inbox). Never lets an inbox problem fail the watcher.
@@ -38,7 +41,11 @@ short_title() {
 
 # One run at a time.
 LOCK="$STATE_DIR/lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
+if [ -n "$ONLY" ]; then
+  # On demand: wait for a scheduled run to finish rather than skipping.
+  got=""; for _ in $(seq 1 60); do mkdir "$LOCK" 2>/dev/null && { got=1; break; }; sleep 2; done
+  [ -n "$got" ] || { log "--only $ONLY: lock still held after 2 min"; inbox_post "$ONLY" "fixer didn't start: another fixer run is still going" --source fixer; exit 1; }
+elif ! mkdir "$LOCK" 2>/dev/null; then
   if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then rmdir "$LOCK"; mkdir "$LOCK" || exit 0; else exit 0; fi
 fi
 trap 'rmdir "$LOCK"' EXIT
@@ -85,11 +92,15 @@ collect_items() { # owner name num
 PRS=$(gh search prs --state=open --limit 100 --json number,repository,title,isDraft \
   -q '.[] | "\(.repository.nameWithOwner)#\(.number)\t\(.title)\t\(if .isDraft then "draft" else "ready" end)"' \
   -- "author:$LOGIN" "archived:false") || { log "search failed"; exit 1; }
+if [ -n "$ONLY" ]; then
+  PRS=$(printf '%s\n' "$PRS" | awk -F'\t' -v r="$ONLY" '$1 == r')
+  [ -n "$PRS" ] || { log "--only $ONLY: not one of my open PRs"; inbox_post "$ONLY" "fixer didn't start: not one of your open PRs" --source fixer; exit 1; }
+fi
 
 export CMUX_SOCKET_PATH
 CMUX_SOCKET_PATH=$(cat "$HOME/Library/Application Support/cmux/last-socket-path" 2>/dev/null)
 
-FIRST_RUN=0; [ -f "$STATE_DIR/baselined" ] || FIRST_RUN=1
+FIRST_RUN=0; [ -f "$STATE_DIR/baselined" ] || [ -n "$ONLY" ] || FIRST_RUN=1
 
 printf '%s\n' "$PRS" | sed '/^$/d' | while IFS=$'\t' read -r ref title state; do
   repo_full=${ref%#*}; num=${ref##*#}; owner=${repo_full%/*}; repo=${repo_full#*/}
@@ -102,8 +113,15 @@ printf '%s\n' "$PRS" | sed '/^$/d' | while IFS=$'\t' read -r ref title state; do
   fi
   touch "$hfile"
 
-  new=$(printf '%s\n' "$items" | sed '/^$/d' | jq -c --rawfile h "$hfile" 'select(.key as $k | ($h | split("\n") | index($k)) | not)')
-  [ -z "$new" ] && continue
+  if [ -n "$ONLY" ]; then
+    # On demand: everything still outstanding (failing CI, unresolved threads), plus any
+    # review or comment not handled yet.
+    new=$(printf '%s\n' "$items" | sed '/^$/d' | jq -c --rawfile h "$hfile" 'select(.kind == "ci" or .kind == "thread" or (.key as $k | ($h | split("\n") | index($k)) | not))')
+    [ -z "$new" ] && { inbox_post "$ref" "fixer: nothing outstanding to fix" --source fixer; continue; }
+  else
+    new=$(printf '%s\n' "$items" | sed '/^$/d' | jq -c --rawfile h "$hfile" 'select(.key as $k | ($h | split("\n") | index($k)) | not)')
+    [ -z "$new" ] && continue
+  fi
 
   if ! "$CM" ping >/dev/null 2>&1; then log "cmux not reachable; will retry $ref next run"; continue; fi
 

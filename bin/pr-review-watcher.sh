@@ -14,6 +14,9 @@ REPOS_DIR="$HOME/Klaviyo/Repos"
 WS_DIR="$STATE_DIR/workspaces"  # PR -> workspace id, for pr-cleanup-watcher
 mkdir -p "$STATE_DIR" "$WS_DIR"
 
+# --only <owner/repo#num>: handle just that PR, now (the inbox's Start buttons).
+ONLY=""; [ "${1:-}" = "--only" ] && ONLY=${2:-}
+
 log() { echo "$(date '+%F %T') $*"; }
 
 # Add an update to the inbox (bin/inbox). Never lets an inbox problem fail the watcher.
@@ -38,8 +41,13 @@ CURRENT=$(gh search prs --state=open --limit 200 --json number,repository,title 
   -q '.[] | "\(.repository.nameWithOwner)#\(.number)\t\(.title)"' \
   -- "user-review-requested:$LOGIN" "archived:false") || { log "search failed"; exit 1; }
 
+if [ -n "$ONLY" ]; then
+  CURRENT=$(printf '%s\n' "$CURRENT" | awk -F'\t' -v r="$ONLY" '$1 == r')
+  [ -n "$CURRENT" ] || { log "--only $ONLY: not in this watcher's open PRs"; inbox_post "$ONLY" "session didn't start: PR isn't open for this watcher" --source inbox; exit 1; }
+fi
+
 # First run: baseline everything currently pending, open nothing.
-if [ ! -f "$SEEN" ]; then
+if [ ! -f "$SEEN" ] && [ -z "$ONLY" ]; then
   printf '%s\n' "$CURRENT" | cut -f1 | sed '/^$/d' > "$SEEN"
   log "baselined $(wc -l < "$SEEN") PRs"
   exit 0
@@ -49,7 +57,7 @@ export CMUX_SOCKET_PATH
 CMUX_SOCKET_PATH=$(cat "$HOME/Library/Application Support/cmux/last-socket-path" 2>/dev/null)
 
 printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title; do
-  grep -qxF "$ref" "$SEEN" && continue
+  [ -z "$ONLY" ] && grep -qxF "$ref" "$SEEN" && continue
   repo_full=${ref%#*}; num=${ref##*#}; repo=${repo_full#*/}
   url="https://github.com/$repo_full/pull/$num"
 

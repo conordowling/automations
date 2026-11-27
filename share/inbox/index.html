@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Inbox</title>
+<meta name="inbox-token" content="__INBOX_TOKEN__">
 <style>
 :root {
   --bg: #f6f6f4; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0;
@@ -62,6 +63,17 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: v
 .review { display: flex; gap: 8px; align-items: baseline; }
 .review .age { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .empty { color: var(--muted); font-style: italic; }
+.acts { display: inline-flex; gap: 4px; margin-left: auto; }
+.btn { background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+  font: inherit; font-size: 11px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.cardacts { display: flex; gap: 4px; justify-content: flex-end; margin-top: 6px; }
+details.fold > summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 18px 0 8px; }
+#toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--text);
+  color: var(--bg); padding: 6px 12px; border-radius: 6px; font-size: 12px; display: none; z-index: 3; }
+#toast.err { background: var(--red); color: #fff; }
 </style>
 </head>
 <body>
@@ -73,7 +85,9 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: v
   <span class="count" id="c-waiting"></span>
   <span class="count" id="c-ticket"></span>
   <span class="fresh" id="fresh"></span>
+  <button class="btn" id="readall">Mark all read</button>
 </header>
+<div id="toast"></div>
 <main id="main"></main>
 <script>
 "use strict";
@@ -82,6 +96,7 @@ const SECTIONS = [
   ["draft", "Drafts"], ["done", "Done (last 3 days)"],
 ];
 const expanded = new Set();
+const openFolds = new Set();
 let shortNames = {};
 
 function el(tag, attrs = {}, ...kids) {
@@ -125,8 +140,41 @@ function prRow(pr) {
     else if (pr.fixer_state === "dirty") bits.push(el("span", { class: "chip fix", text: "🔧 uncommitted changes" }));
   }
   if (pr.workstream.startsWith("pr:") === false) bits.push(el("span", { class: "title", text: shortTitle(pr.title) }));
+  if (pr.state === "open") {
+    const acts = el("span", { class: "acts" });
+    const ws = JSON.parse(pr.workspaces || "{}");
+    for (const kind of ["authored", "fixer"]) if (ws[kind])
+      acts.append(button(`${WS_LABELS[kind]} Focus`, `Focus the ${kind === "fixer" ? "fixer" : "self-review"} workspace`, (b) => act("focus", { ref: pr.ref, kind }, b)));
+    acts.append(button("Self-review", "Start a Claude self-review of this PR now", (b) => act("start", { ref: pr.ref, kind: "self-review" }, b)));
+    acts.append(button("Fix", "Start the fixer on this PR's failing CI and open threads", (b) => act("start", { ref: pr.ref, kind: "fixer" }, b)));
+    bits.push(acts);
+  }
   return el("div", { class: "pr" }, ...bits);
 }
+
+const TOKEN = document.querySelector('meta[name="inbox-token"]').content;
+let toastTimer = null;
+function toast(msg, err) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.display = "none"; }, 3500);
+}
+async function act(name, body, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(`/api/${name}`, { method: "POST", headers: { "Content-Type": "application/json", "X-Inbox-Token": TOKEN }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({ message: `HTTP ${r.status}` }));
+    toast(j.message, !r.ok);
+    etag = null; poll.now && poll.now();
+  } catch (e) { toast("inbox server unreachable", true); }
+  finally { if (btn) btn.disabled = false; }
+}
+function button(label, title, onclick) {
+  const b = el("button", { class: "btn", text: label, title });
+  b.addEventListener("click", (ev) => { ev.stopPropagation(); onclick(b); });
+  return b;
+}
+const WS_LABELS = { fixer: "🔧", authored: "📝", review: "👀" };
 
 function shortTitle(t) { return t.replace(/^\[?[A-Z][A-Z0-9]*-[A-Z0-9]+\]?:?\s*/, "") || t; }
 
@@ -145,6 +193,17 @@ function card(w) {
     if (w.events.length > 3) c.append(el("button", { class: "more", text: open ? "show less" : `show all ${w.events.length}`,
       onclick: () => { open ? expanded.delete(w.key) : expanded.add(w.key); render(lastState); } }));
   }
+  const acts = el("div", { class: "cardacts" });
+  const ref = { workstream: w.key };
+  if (w.archived) acts.append(button("Restore", "Bring this workstream back", (b) => act("archive", { ...ref, on: false }, b)));
+  else if (w.snoozed) acts.append(button("Unsnooze", "", (b) => act("snooze", { ...ref, until: "off" }, b)));
+  else {
+    if (w.unread) acts.append(button("Mark read", "", (b) => act("read", ref, b)));
+    acts.append(button("Snooze 1 day", "", (b) => act("snooze", { ...ref, until: "day" }, b)));
+    acts.append(button("Snooze until it changes", "Hide until something new happens on it", (b) => act("snooze", { ...ref, until: "change" }, b)));
+    acts.append(button("Archive", "Hide this workstream", (b) => act("archive", ref, b)));
+  }
+  c.append(acts);
   return c;
 }
 
@@ -165,6 +224,9 @@ function reviewCard(r) {
     el("span", { class: "title", text: r.title }),
     el("span", { class: "age", text: `${r.author} · +${r.additions}/−${r.deletions} · ${ago(r.created_at)}` })));
   if (r.events && r.events.length) c.append(eventList(r.events, false));
+  c.append(el("div", { class: "cardacts" },
+    button("👀 Focus", "Focus the review workspace", (b) => act("focus", { ref: r.ref, kind: "review" }, b)),
+    button("Start review", "Start a Claude review of this PR now", (b) => act("start", { ref: r.ref, kind: "review" }, b))));
   return c;
 }
 
@@ -179,11 +241,11 @@ function render(s) {
   lastState = s;
   shortNames = s.short_names || {};
   const by = {};
-  for (const w of s.workstreams) (by[w.bucket] ||= []).push(w);
+  for (const w of s.workstreams) (by[w.archived ? "archived" : w.snoozed ? "snoozed" : w.bucket] ||= []).push(w);
   setCount("c-needs", (by.needs_you || []).length, "need you", true);
   setCount("c-reviews", s.reviews.length, "reviews", true);
   setCount("c-waiting", (by.waiting || []).length, "waiting", false);
-  setCount("c-ticket", s.workstreams.filter(w => w.key.startsWith("pr:") && w.bucket !== "done").length, "need a ticket", false);
+  setCount("c-ticket", s.workstreams.filter(w => w.key.startsWith("pr:") && w.bucket !== "done" && !w.archived && !w.snoozed).length, "need a ticket", false);
   const m = s.meta, fresh = document.getElementById("fresh");
   fresh.textContent = m.gh_error ? `GitHub stale since ${ago(m.gh_error_since)}: ${m.gh_error}`
     : `GitHub ${ago(m.gh_synced_at) || "not synced yet"}`;
@@ -198,6 +260,15 @@ function render(s) {
     main.append(el("h2", { text: `${label} · ${items.length}` }));
     if (!items.length) main.append(el("div", { class: "empty", text: "Nothing needs you." }));
     for (const it of items) main.append(id === "reviews" ? reviewCard(it) : card(it));
+  }
+  for (const [id, label] of [["snoozed", "Snoozed"], ["archived", "Archived"]]) {
+    const items = by[id] || [];
+    if (!items.length) continue;
+    const d = el("details", { class: "fold" }, el("summary", { text: `${label} · ${items.length}` }));
+    if (openFolds.has(id)) d.open = true;
+    d.addEventListener("toggle", () => { d.open ? openFolds.add(id) : openFolds.delete(id); });
+    for (const w of items) d.append(card(w));
+    main.append(d);
   }
   window.scrollTo(0, y);
 }
@@ -214,9 +285,12 @@ async function poll() {
   } catch (e) {
     banner.style.display = "block";
   }
-  setTimeout(poll, 2000);
+  clearTimeout(poll.timer);
+  poll.timer = setTimeout(poll, 2000);
 }
+poll.now = () => { clearTimeout(poll.timer); poll(); };
 poll();
+document.getElementById("readall").addEventListener("click", (ev) => act("read", { all: true }, ev.target));
 setInterval(() => lastState && render(lastState), 60e3);  // keep "5m ago" labels current
 </script>
 </body>
