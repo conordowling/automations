@@ -18,6 +18,12 @@ mkdir -p "$HANDLED_DIR" "$WS_DIR" "$WT_ROOT"
 
 log() { echo "$(date '+%F %T') $*"; }
 
+# Short name for a repo in workspace names, from share/pr-watchers/repo-short-names.
+short_repo() {
+  awk -v r="$1" '!/^#/ && $1==r {print $2; f=1; exit} END {if (!f) print r}' \
+    "$HOME/.local/share/pr-watchers/repo-short-names" 2>/dev/null || echo "$1"
+}
+
 # One run at a time.
 LOCK="$STATE_DIR/lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -105,7 +111,7 @@ Fix these in the worktree on the PR branch. Run \`git fetch origin\` first and r
   # Existing workspace for this PR? Look it up by the id saved when it was opened
   # (the name follows the PR title, which can change), then by name, including the
   # old "🔧 Fix PR <num> <repo>" name of workspaces opened before the rename.
-  title_ws="🔧 [$repo] $title"
+  title_ws="🔧 [$(short_repo "$repo")] $title"
   wsfile="$WS_DIR/${owner}__${repo}__${num}"
   saved=$(cat "$wsfile" 2>/dev/null)
   ws=$("$CM" list-workspaces 2>/dev/null | awk -v s="$saved" -v t="$title_ws" -v o="🔧 Fix PR $num $repo" '{id=$1; if ($1=="*") id=$2; line=$0; sub(/^[* ] *[^ ]+ +/,"",line); sub(/ +\[selected\]$/,"",line); if (id==s || line==t || line==o) {print id; exit}}')

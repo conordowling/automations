@@ -13,6 +13,12 @@ mkdir -p "$STATE_DIR"
 
 log() { echo "$(date '+%F %T') $*"; }
 
+# Short name for a repo in workspace names, from share/pr-watchers/repo-short-names.
+short_repo() {
+  awk -v r="$1" '!/^#/ && $1==r {print $2; f=1; exit} END {if (!f) print r}' \
+    "$HOME/.local/share/pr-watchers/repo-short-names" 2>/dev/null || echo "$1"
+}
+
 LOGIN=$(gh api user -q .login) || { log "gh auth failed"; exit 1; }
 CURRENT=$(gh search prs --state=open --limit 200 --json number,repository,title,isDraft \
   -q '.[] | "\(.repository.nameWithOwner)#\(.number)\t\(.title)\t\(if .isDraft then "draft" else "ready" end)"' \
@@ -47,7 +53,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title state
     {pane:{surfaces:[{type:"terminal",command:$cmd}]}},
     {pane:{surfaces:[{type:"browser",url:$url}]}}]}')
 
-  if out=$("$CM" new-workspace --name "📝 [$repo] $title" --cwd "$cwd" \
+  if out=$("$CM" new-workspace --name "📝 [$(short_repo "$repo")] $title" --cwd "$cwd" \
         --layout "$layout" --focus false 2>&1); then
     ws=$(echo "$out" | awk '/^OK/ {print $2}')
     [ -n "$ws" ] && "$CM" set-status pr_authored "self-review ($state)" --icon pencil --color "#34c759" --priority 90 --workspace "$ws" >/dev/null 2>&1

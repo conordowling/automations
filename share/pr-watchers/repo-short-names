@@ -1,0 +1,3 @@
+# Short names the PR watchers use for repos in workspace names: "<repo> <short name>".
+# Repos not listed keep their full name.
+materialized-views mv
