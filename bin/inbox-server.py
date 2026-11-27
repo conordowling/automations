@@ -263,7 +263,10 @@ def github_loop():
             if failures == 3:
                 add_event(db, "inbox", None, "inbox", f"GitHub polling failing since {since}: {str(e)[:200]}")
             log(f"github poll failed ({failures}): {e}")
-            if "rate limit" in str(e).lower():
+            # "...for <ip>. Authenticated requests get a higher rate limit": gh fell back to
+            # anonymous because launchd couldn't read the keychain this time. That clears on
+            # its own, so retry as usual; only a real rate limit gets the long backoff.
+            if "rate limit" in str(e).lower() and "Authenticated requests" not in str(e):
                 wait = 900
         time.sleep(wait)
 
@@ -271,25 +274,38 @@ def github_loop():
 # --- Watcher state -----------------------------------------------------------------------
 
 def git(wt, *args):
-    out = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True, timeout=30)
+    out = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True, timeout=90)
     return out.returncode, out.stdout.strip()
 
 
-def fixer_worktree(wt, head_oid, fetched):
-    """(state, commits ahead of the PR) for a fixer worktree."""
+def fixer_worktree(wt, head_oid, fetched, cache):
+    """(state, commits ahead of the PR) for a fixer worktree. The patch comparison is
+    cached by (HEAD, PR head): git is slow in k-repo, and launchd throttles our I/O."""
     # Tracked files only: a full status scans untracked files and takes ~45 s in k-repo.
     if git(wt, "status", "--porcelain", "--untracked-files=no")[1]:
         return "dirty", 0
+    head = git(wt, "rev-parse", "HEAD")[1]
+    if (wt, head, head_oid) not in cache:
+        result = fixer_ahead(wt, head_oid, fetched)
+        if result is None:  # couldn't compare (PR head not fetched): try again next poll
+            return "idle", 0
+        cache[(wt, head, head_oid)] = result
+    return cache[(wt, head, head_oid)]
+
+
+def fixer_ahead(wt, head_oid, fetched):
     if git(wt, "cat-file", "-e", f"{head_oid}^{{commit}}")[0]:
         if head_oid in fetched:  # fetch a missing PR head once, not every 30 s
-            return "idle", 0
+            return None
         fetched.add(head_oid)
         git(wt, "fetch", "-q", "origin", head_oid)
     # Count by patch (git cherry), not hash: after a rebase of the PR, commits already on it
     # have new hashes. If the PR head isn't an ancestor of HEAD, pushing would undo the
     # rebase, so that's "diverged", not "ready to push".
     rc, out = git(wt, "cherry", head_oid, "HEAD")
-    ahead = sum(l.startswith("+") for l in out.splitlines()) if rc == 0 else 0
+    if rc:
+        return None
+    ahead = sum(l.startswith("+") for l in out.splitlines())
     if not ahead:
         return "idle", 0
     on_top = git(wt, "merge-base", "--is-ancestor", head_oid, "HEAD")[0] == 0
@@ -301,7 +317,7 @@ FIXER_WORDS = {"ready_to_push": "{n} fixer commit{s} ready to push",
                "dirty": "fixer worktree has uncommitted changes"}
 
 
-def poll_watchers(db, fetched):
+def poll_watchers(db, fetched, cache):
     # Git (and the odd fetch) runs before the write transaction, so it never holds the
     # db lock while other writers, like `inbox post`, wait.
     updates = []
@@ -315,7 +331,7 @@ def poll_watchers(db, fetched):
                 pass
         wt = WT_ROOT / f"{pr['repo_full'].split('/')[1]}-{pr['num']}"
         try:
-            state, ahead = (fixer_worktree(wt, pr["head_oid"], fetched)
+            state, ahead = (fixer_worktree(wt, pr["head_oid"], fetched, cache)
                             if wt.is_dir() and pr["state"] == "open" else (None, 0))
         except subprocess.TimeoutExpired:
             log(f"git timed out in {wt}; keeping its last state")
@@ -333,10 +349,10 @@ def poll_watchers(db, fetched):
 
 def watcher_loop():
     db = connect()
-    fetched = set()
+    fetched, cache = set(), {}
     while True:
         try:
-            poll_watchers(db, fetched)
+            poll_watchers(db, fetched, cache)
         except Exception as e:
             if db.in_transaction:
                 db.execute("rollback")
