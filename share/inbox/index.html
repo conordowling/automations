@@ -90,6 +90,7 @@ function el(tag, attrs = {}, ...kids) {
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
   }
   for (const k of kids) if (k != null) e.append(k);
+  if (tag === "a") { e.target = "_blank"; e.rel = "noopener"; }  // never navigate away from the inbox
   return e;
 }
 
