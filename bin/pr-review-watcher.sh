@@ -16,6 +16,9 @@ mkdir -p "$STATE_DIR" "$WS_DIR"
 
 log() { echo "$(date '+%F %T') $*"; }
 
+# Add an update to the inbox (bin/inbox). Never lets an inbox problem fail the watcher.
+inbox_post() { "$HOME/.local/bin/inbox" post "$@" >/dev/null 2>&1 || true; }
+
 # Short name for a repo in workspace names, from share/pr-watchers/repo-short-names.
 short_repo() {
   awk -v r="$1" '!/^#/ && $1==r {print $2; f=1; exit} END {if (!f) print r}' \
@@ -56,7 +59,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title; do
   fi
 
   cwd="$REPOS_DIR/$repo"; [ -d "$cwd" ] || cwd="$REPOS_DIR"
-  prompt="Review GitHub PR $url (use gh pr view and gh pr diff, and read surrounding code in this repo as needed). Give me a list of anything that needs to be fixed, in priority order (most severe first), with file:line references and a short reason for each. This is read-only: DO NOT post comments, reviews, or approvals on GitHub, and do not push or modify anything."
+  prompt="Review GitHub PR $url (use gh pr view and gh pr diff, and read surrounding code in this repo as needed). Give me a list of anything that needs to be fixed, in priority order (most severe first), with file:line references and a short reason for each. This is read-only: DO NOT post comments, reviews, or approvals on GitHub, and do not push or modify anything. When you're done, run \`~/.local/bin/inbox post $ref '<one line: verdict and how many issues>' --source review\` so the result shows in my inbox. That local command is the one exception to read-only."
 
   # Left: Claude review session. Right: the PR in a cmux browser pane.
   cmd="cd $(printf '%q' "$cwd") && claude $(printf '%q' "$prompt")"
@@ -72,6 +75,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title; do
     "$CM" notify --title "Review requested: $repo #$num" --body "$title" ${ws:+--workspace "$ws"} >/dev/null 2>&1
     osascript -e "display notification \"${title//\"/\\\"}\" with title \"Review requested: $repo #$num\" subtitle \"Claude review session opened in cmux\"" >/dev/null 2>&1
     echo "$ref" >> "$SEEN"
+    inbox_post "$ref" "review session opened" --source review
     log "opened $ref ($out)"
   else
     log "failed to open $ref: $out"

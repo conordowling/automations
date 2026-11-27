@@ -51,6 +51,7 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: v
 .dot.SUCCESS { background: var(--green); } .dot.FAILURE, .dot.ERROR { background: var(--red); }
 .dot.PENDING, .dot.EXPECTED { background: var(--amber); }
 .bad { color: var(--red); }
+.chip.fix { background: var(--unread); color: var(--text); }
 .events { margin: 6px 0 0 14px; padding: 0; list-style: none; font-size: 12px; }
 .events li { padding: 1px 4px; border-radius: 4px; color: var(--muted); }
 .events li.new { background: var(--unread); color: var(--text); }
@@ -119,6 +120,9 @@ function prRow(pr) {
     if (pr.unresolved) bits.push(el("span", { class: "bad", text: `${pr.unresolved} unresolved` }));
     if (pr.bot_unresolved) bits.push(el("span", { class: "chip", text: `${pr.bot_unresolved} bot thread${pr.bot_unresolved > 1 ? "s" : ""}` }));
     if (pr.ci === "FAILURE" || pr.ci === "ERROR") bits.push(el("span", { class: "bad", text: "CI failing" }));
+    if (pr.fixer_state === "ready_to_push") bits.push(el("span", { class: "chip fix", text: `🔧 ${pr.fixer_ahead} commit${pr.fixer_ahead > 1 ? "s" : ""} ready to push` }));
+    else if (pr.fixer_state === "diverged") bits.push(el("span", { class: "chip fix", text: `🔧 ${pr.fixer_ahead} commit${pr.fixer_ahead > 1 ? "s" : ""} not on the rebased PR` }));
+    else if (pr.fixer_state === "dirty") bits.push(el("span", { class: "chip fix", text: "🔧 uncommitted changes" }));
   }
   if (pr.workstream.startsWith("pr:") === false) bits.push(el("span", { class: "title", text: shortTitle(pr.title) }));
   return el("div", { class: "pr" }, ...bits);
@@ -137,25 +141,31 @@ function card(w) {
   for (const pr of w.prs) c.append(prRow(pr));
   if (w.events.length) {
     const open = expanded.has(w.key);
-    const ul = el("ul", { class: "events" });
-    const lastHour = Date.now() - 3600e3;
-    for (const e of (open ? w.events : w.events.slice(0, 3))) {
-      const isNew = !e.read && Date.parse(e.created_at) > lastHour;
-      ul.append(el("li", { class: isNew ? "new" : "" }, el("time", { text: ago(e.created_at) }),
-        el("span", { class: "src", text: e.source }), e.pr_ref ? `${shortRef({ ref: e.pr_ref })} · ` : "", e.text));
-    }
-    c.append(ul);
+    c.append(eventList(open ? w.events : w.events.slice(0, 3), !w.key.startsWith("pr:")));
     if (w.events.length > 3) c.append(el("button", { class: "more", text: open ? "show less" : `show all ${w.events.length}`,
       onclick: () => { open ? expanded.delete(w.key) : expanded.add(w.key); render(lastState); } }));
   }
   return c;
 }
 
+function eventList(events, showPr) {
+  const ul = el("ul", { class: "events" });
+  const lastHour = Date.now() - 3600e3;
+  for (const e of events) {
+    const isNew = !e.read && Date.parse(e.created_at) > lastHour;
+    ul.append(el("li", { class: isNew ? "new" : "" }, el("time", { text: ago(e.created_at) }),
+      el("span", { class: "src", text: e.source }), showPr && e.pr_ref ? `${shortRef({ ref: e.pr_ref })} · ` : "", e.text));
+  }
+  return ul;
+}
+
 function reviewCard(r) {
-  return el("div", { class: "card review" },
+  const c = el("div", { class: "card" }, el("div", { class: "review" },
     el("a", { class: "key", href: r.url, text: shortRef(r) }),
     el("span", { class: "title", text: r.title }),
-    el("span", { class: "age", text: `${r.author} · +${r.additions}/−${r.deletions} · ${ago(r.created_at)}` }));
+    el("span", { class: "age", text: `${r.author} · +${r.additions}/−${r.deletions} · ${ago(r.created_at)}` })));
+  if (r.events && r.events.length) c.append(eventList(r.events, false));
+  return c;
 }
 
 function setCount(id, n, label, hot) {

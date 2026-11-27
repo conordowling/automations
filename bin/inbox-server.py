@@ -22,6 +22,10 @@ PORT = int(os.environ.get("INBOX_PORT", "8765"))
 DB = Path(os.environ.get("INBOX_DB", Path.home() / ".local/state/inbox/inbox.db"))
 ASSETS = Path(__file__).resolve().parents[1] / "share/inbox"
 GH_INTERVAL = 120
+WATCH_INTERVAL = 30
+WT_ROOT = Path.home() / ".local/share/pr-fixer-watcher/worktrees"
+WATCHER_WS = {kind: Path.home() / f".local/state/pr-{kind}-watcher/workspaces"
+              for kind in ("authored", "review", "fixer")}
 DONE_HIDE_AFTER = timedelta(days=3)
 ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
@@ -32,7 +36,7 @@ create table if not exists workstreams (
   snoozed_until text, archived integer default 0, updated_at text);
 create table if not exists prs (
   ref text primary key, repo_full text, num integer, workstream text, title text, url text,
-  state text, is_draft integer, ci text, review_decision text, unresolved integer, bot_unresolved integer,
+  state text, is_draft integer, ci text, review_decision text, unresolved integer,
   additions integer, deletions integer, head_oid text, updated_at text, merged_at text);
 create table if not exists reviews (
   ref text primary key, repo_full text, num integer, title text, url text, author text,
@@ -43,6 +47,17 @@ create table if not exists events (
 create index if not exists events_ws on events(workstream, created_at);
 create table if not exists meta (key text primary key, value text);
 """
+# Columns added after the first release; migrate() adds any an existing db lacks.
+PR_EXTRA_COLUMNS = {"bot_unresolved": "integer", "fixer_state": "text", "fixer_ahead": "integer",
+                    "workspaces": "text"}
+
+
+def migrate(db):
+    db.executescript(SCHEMA)
+    have = {r["name"] for r in db.execute("pragma table_info(prs)")}
+    for col, typ in PR_EXTRA_COLUMNS.items():
+        if col not in have:
+            db.execute(f"alter table prs add column {col} {typ}")
 
 
 def log(msg):
@@ -196,8 +211,9 @@ def poll_github(db, login):
             for text in pr_events(old, row):
                 add_event(db, row["workstream"], row["ref"], "github", text)
         cols = ",".join(row)
-        db.execute(f"insert or replace into prs ({cols}) values ({','.join('?' * len(row))})",
-                   list(row.values()))
+        updates = ",".join(f"{c}=excluded.{c}" for c in row if c != "ref")
+        db.execute(f"insert into prs ({cols}) values ({','.join('?' * len(row))}) "
+                   f"on conflict(ref) do update set {updates}", list(row.values()))
         ws = db.execute("select updated_at from workstreams where key = ?", (row["workstream"],)).fetchone()
         if ws is None:
             db.execute("insert into workstreams (key, title, updated_at) values (?,?,?)",
@@ -252,6 +268,82 @@ def github_loop():
         time.sleep(wait)
 
 
+# --- Watcher state -----------------------------------------------------------------------
+
+def git(wt, *args):
+    out = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True, timeout=30)
+    return out.returncode, out.stdout.strip()
+
+
+def fixer_worktree(wt, head_oid, fetched):
+    """(state, commits ahead of the PR) for a fixer worktree."""
+    # Tracked files only: a full status scans untracked files and takes ~45 s in k-repo.
+    if git(wt, "status", "--porcelain", "--untracked-files=no")[1]:
+        return "dirty", 0
+    if git(wt, "cat-file", "-e", f"{head_oid}^{{commit}}")[0]:
+        if head_oid in fetched:  # fetch a missing PR head once, not every 30 s
+            return "idle", 0
+        fetched.add(head_oid)
+        git(wt, "fetch", "-q", "origin", head_oid)
+    # Count by patch (git cherry), not hash: after a rebase of the PR, commits already on it
+    # have new hashes. If the PR head isn't an ancestor of HEAD, pushing would undo the
+    # rebase, so that's "diverged", not "ready to push".
+    rc, out = git(wt, "cherry", head_oid, "HEAD")
+    ahead = sum(l.startswith("+") for l in out.splitlines()) if rc == 0 else 0
+    if not ahead:
+        return "idle", 0
+    on_top = git(wt, "merge-base", "--is-ancestor", head_oid, "HEAD")[0] == 0
+    return ("ready_to_push" if on_top else "diverged"), ahead
+
+
+FIXER_WORDS = {"ready_to_push": "{n} fixer commit{s} ready to push",
+               "diverged": "{n} fixer commit{s} not on the PR, which was rebased since: rebase the worktree before pushing",
+               "dirty": "fixer worktree has uncommitted changes"}
+
+
+def poll_watchers(db, fetched):
+    # Git (and the odd fetch) runs before the write transaction, so it never holds the
+    # db lock while other writers, like `inbox post`, wait.
+    updates = []
+    for pr in db.execute("select ref, repo_full, num, workstream, head_oid, state, fixer_state from prs").fetchall():
+        key = pr["repo_full"].replace("/", "__") + f"__{pr['num']}"
+        ws = {}
+        for kind, d in WATCHER_WS.items():
+            try:
+                ws[kind] = (d / key).read_text().strip()
+            except OSError:
+                pass
+        wt = WT_ROOT / f"{pr['repo_full'].split('/')[1]}-{pr['num']}"
+        try:
+            state, ahead = (fixer_worktree(wt, pr["head_oid"], fetched)
+                            if wt.is_dir() and pr["state"] == "open" else (None, 0))
+        except subprocess.TimeoutExpired:
+            log(f"git timed out in {wt}; keeping its last state")
+            state, ahead = pr["fixer_state"], 0
+        updates.append((pr, state, ahead, json.dumps(ws) if ws else None))
+    db.execute("begin")
+    for pr, state, ahead, ws in updates:
+        if state != pr["fixer_state"] and state in FIXER_WORDS:
+            add_event(db, pr["workstream"], pr["ref"], "fixer",
+                      FIXER_WORDS[state].format(n=ahead, s="s" if ahead > 1 else ""))
+        db.execute("update prs set fixer_state = ?, fixer_ahead = ?, workspaces = ? where ref = ?",
+                   (state, ahead, ws, pr["ref"]))
+    db.execute("commit")
+
+
+def watcher_loop():
+    db = connect()
+    fetched = set()
+    while True:
+        try:
+            poll_watchers(db, fetched)
+        except Exception as e:
+            if db.in_transaction:
+                db.execute("rollback")
+            log(f"watcher poll failed: {e}")
+        time.sleep(WATCH_INTERVAL)
+
+
 # --- State for the page -----------------------------------------------------------------
 
 def bucket(prs):
@@ -259,7 +351,7 @@ def bucket(prs):
     if not open_prs:
         return "done"
     if any(p["ci"] in ("FAILURE", "ERROR") or p["review_decision"] == "CHANGES_REQUESTED"
-           or p["unresolved"] for p in open_prs):
+           or p["unresolved"] or p["fixer_state"] in ("ready_to_push", "diverged", "dirty") for p in open_prs):
         return "needs_you"
     if all(p["is_draft"] for p in open_prs):
         return "draft"
@@ -292,7 +384,12 @@ def state(db):
         w["unread"] = db.execute("select count(*) from events where workstream = ? and read = 0",
                                  (w["key"],)).fetchone()[0]
         workstreams.append(w)
-    reviews = [dict(r) for r in db.execute("select * from reviews order by created_at")]
+    reviews = []
+    for r in db.execute("select * from reviews order by created_at"):
+        r = dict(r)
+        r["events"] = [dict(e) for e in db.execute(
+            "select * from events where workstream = ? order by id desc limit 3", (f"review:{r['ref']}",))]
+        reviews.append(r)
     meta = {k: v for k, v in db.execute("select key, value from meta")}
     inbox_events = [dict(e) for e in db.execute(
         "select * from events where workstream = 'inbox' order by id desc limit 5")]
@@ -350,8 +447,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     DB.parent.mkdir(parents=True, exist_ok=True)
-    connect().executescript(SCHEMA)
+    migrate(connect())
     threading.Thread(target=github_loop, daemon=True).start()
+    threading.Thread(target=watcher_loop, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.daemon_threads = True
     log(f"inbox on http://localhost:{PORT} (db {DB}, assets {ASSETS})")

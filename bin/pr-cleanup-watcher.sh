@@ -21,6 +21,9 @@ mkdir -p "$STATE_DIR/kept"
 
 log() { echo "$(date '+%F %T') $*"; }
 
+# Add an update to the inbox (bin/inbox). Never lets an inbox problem fail the watcher.
+inbox_post() { "$HOME/.local/bin/inbox" post "$@" >/dev/null 2>&1 || true; }
+
 # One run at a time: removing a large worktree can outlast the interval.
 LOCK="$STATE_DIR/lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -57,6 +60,7 @@ for key in $keys; do
     if [ ! -f "$STATE_DIR/kept/$key" ]; then
       touch "$STATE_DIR/kept/$key"
       osascript -e "display notification \"Kept $wt: $why\" with title \"PR $state: $repo #$num\" subtitle \"Workspace cleanup skipped\"" >/dev/null 2>&1
+      inbox_post "$owner/$repo#$num" "PR $state, but kept $wt: $why" --source cleanup
       log "kept $key ($state): $why in $wt"
     fi
     continue
@@ -82,6 +86,7 @@ for key in $keys; do
   rm -f "$FIXER/handled/$key" "$STATE_DIR/kept/$key"
   title=$(jq -r .title <<<"$pr")
   [ "$closed" -gt 0 ] && osascript -e "display notification \"${title//\"/\\\"}\" with title \"PR $state: $repo #$num\" subtitle \"Closed $closed workspace(s)\"" >/dev/null 2>&1
+  inbox_post "$owner/$repo#$num" "PR $state: closed $closed workspace(s), removed the fixer worktree and branch" --source cleanup
   log "cleaned up $key ($state; closed $closed workspace(s))"
 done
 exit
