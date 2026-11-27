@@ -4,6 +4,8 @@
 # session in a per-PR cmux workspace (or message the live one) to fix them
 # locally. Fixes are committed in a git worktree; nothing is pushed and
 # nothing is posted to GitHub.
+# Read to the end before running, so editing this file mid-run can't break the run.
+{
 set -u
 export CMUX_QUIET=1
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -168,3 +170,5 @@ done
 
 [ "$FIRST_RUN" = 1 ] && { touch "$STATE_DIR/baselined"; log "baselined"; }
 exit 0
+exit
+}

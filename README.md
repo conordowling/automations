@@ -9,6 +9,7 @@ the PR watchers. Each one opens a Claude session in a cmux workspace.
 | `pr-authored-watcher` | every 5 min | `bin/pr-authored-watcher.sh` |
 | `pr-review-watcher` | every 5 min | `bin/pr-review-watcher.sh` |
 | `pr-fixer-watcher` | every 5 min | `bin/pr-fixer-watcher.sh` |
+| `pr-cleanup-watcher` | every 15 min: when a PR is merged or closed, closes its 📝/👀/🔧 workspaces and removes the fixer worktree and `fix/pr-<num>` branch (keeps a worktree with unpushed or uncommitted work, and skips the workspace I'm in) | `bin/pr-cleanup-watcher.sh` |
 | `automations-sync` | whenever this repo changes | `install.sh --sync` |
 
 ## Install

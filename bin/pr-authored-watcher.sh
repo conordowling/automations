@@ -1,6 +1,8 @@
 #!/bin/bash
 # Opens a cmux workspace running a Claude self-review for each newly opened
 # PR you authored (draft or ready), then notifies via cmux and macOS.
+# Read to the end before running, so editing this file mid-run can't break the run.
+{
 set -u
 export CMUX_QUIET=1
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -9,7 +11,8 @@ CM=/Applications/cmux.app/Contents/Resources/bin/cmux
 STATE_DIR="$HOME/.local/state/pr-authored-watcher"
 SEEN="$STATE_DIR/seen.txt"
 REPOS_DIR="$HOME/Klaviyo/Repos"
-mkdir -p "$STATE_DIR"
+WS_DIR="$STATE_DIR/workspaces"  # PR -> workspace id, for pr-cleanup-watcher
+mkdir -p "$STATE_DIR" "$WS_DIR"
 
 log() { echo "$(date '+%F %T') $*"; }
 
@@ -63,6 +66,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title state
   if out=$("$CM" new-workspace --name "📝 [$(short_repo "$repo")] $(short_title "$title")" --cwd "$cwd" \
         --layout "$layout" --focus false 2>&1); then
     ws=$(echo "$out" | awk '/^OK/ {print $2}')
+    [ -n "$ws" ] && echo "$ws" > "$WS_DIR/${repo_full%/*}__${repo}__${num}"
     [ -n "$ws" ] && "$CM" set-status pr_authored "self-review ($state)" --icon pencil --color "#34c759" --priority 90 --workspace "$ws" >/dev/null 2>&1
     "$CM" notify --title "PR opened: $repo #$num ($state)" --body "$title" ${ws:+--workspace "$ws"} >/dev/null 2>&1
     osascript -e "display notification \"${title//\"/\\\"}\" with title \"PR opened: $repo #$num ($state)\" subtitle \"Claude self-review opened in cmux\"" >/dev/null 2>&1
@@ -72,3 +76,5 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title state
     log "failed to open $ref: $out"
   fi
 done
+exit
+}
