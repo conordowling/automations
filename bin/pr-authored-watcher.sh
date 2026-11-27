@@ -19,6 +19,13 @@ short_repo() {
     "$HOME/.local/share/pr-watchers/repo-short-names" 2>/dev/null || echo "$1"
 }
 
+# PR title without a leading ticket id ("[PERS-123]: ", "PERS-123 "), for workspace names.
+short_title() {
+  local t
+  t=$(printf '%s' "$1" | sed -E 's/^\[?[A-Z][A-Z0-9]*-[A-Z0-9]+\]?:?[[:space:]]*//')
+  echo "${t:-$1}"
+}
+
 LOGIN=$(gh api user -q .login) || { log "gh auth failed"; exit 1; }
 CURRENT=$(gh search prs --state=open --limit 200 --json number,repository,title,isDraft \
   -q '.[] | "\(.repository.nameWithOwner)#\(.number)\t\(.title)\t\(if .isDraft then "draft" else "ready" end)"' \
@@ -53,7 +60,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title state
     {pane:{surfaces:[{type:"terminal",command:$cmd}]}},
     {pane:{surfaces:[{type:"browser",url:$url}]}}]}')
 
-  if out=$("$CM" new-workspace --name "📝 [$(short_repo "$repo")] $title" --cwd "$cwd" \
+  if out=$("$CM" new-workspace --name "📝 [$(short_repo "$repo")] $(short_title "$title")" --cwd "$cwd" \
         --layout "$layout" --focus false 2>&1); then
     ws=$(echo "$out" | awk '/^OK/ {print $2}')
     [ -n "$ws" ] && "$CM" set-status pr_authored "self-review ($state)" --icon pencil --color "#34c759" --priority 90 --workspace "$ws" >/dev/null 2>&1
