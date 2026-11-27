@@ -10,6 +10,7 @@ the PR watchers. Each one opens a Claude session in a cmux workspace.
 | `pr-review-watcher` | every 5 min | `bin/pr-review-watcher.sh` |
 | `pr-fixer-watcher` | every 5 min | `bin/pr-fixer-watcher.sh` |
 | `pr-cleanup-watcher` | every 15 min: when a PR is merged or closed, closes its 📝/👀/🔧 workspaces and removes the fixer worktree and `fix/pr-<num>` branch (keeps a worktree with unpushed or uncommitted work, and skips the workspace I'm in) | `bin/pr-cleanup-watcher.sh` |
+| `inbox-server` | always (launchd `KeepAlive`): the inbox on http://localhost:8765, polling GitHub every 2 min. `inbox open` focuses its pinned 📥 Inbox workspace in cmux. Design in `docs/plans/2026-11-27-inbox-design.md` | `bin/inbox-server.py`, `bin/inbox` |
 | `automations-sync` | whenever this repo changes | `install.sh --sync` |
 
 ## Install
