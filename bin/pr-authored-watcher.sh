@@ -47,7 +47,7 @@ printf '%s\n' "$CURRENT" | sed '/^$/d' | while IFS=$'\t' read -r ref title state
     {pane:{surfaces:[{type:"terminal",command:$cmd}]}},
     {pane:{surfaces:[{type:"browser",url:$url}]}}]}')
 
-  if out=$("$CM" new-workspace --name "📝 My PR $num $repo" --cwd "$cwd" \
+  if out=$("$CM" new-workspace --name "📝 [$repo] $title" --cwd "$cwd" \
         --layout "$layout" --focus false 2>&1); then
     ws=$(echo "$out" | awk '/^OK/ {print $2}')
     [ -n "$ws" ] && "$CM" set-status pr_authored "self-review ($state)" --icon pencil --color "#34c759" --priority 90 --workspace "$ws" >/dev/null 2>&1

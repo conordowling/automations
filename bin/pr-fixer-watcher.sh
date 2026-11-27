@@ -11,9 +11,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 CM=/Applications/cmux.app/Contents/Resources/bin/cmux
 STATE_DIR="$HOME/.local/state/pr-fixer-watcher"
 HANDLED_DIR="$STATE_DIR/handled"
+WS_DIR="$STATE_DIR/workspaces"
 WT_ROOT="$HOME/.local/share/pr-fixer-watcher/worktrees"
 REPOS_DIR="$HOME/Klaviyo/Repos"
-mkdir -p "$HANDLED_DIR" "$WT_ROOT"
+mkdir -p "$HANDLED_DIR" "$WS_DIR" "$WT_ROOT"
 
 log() { echo "$(date '+%F %T') $*"; }
 
@@ -101,9 +102,13 @@ Fix these in the worktree on the PR branch. Run \`git fetch origin\` first and r
   pfile="$STATE_DIR/prompts/${repo}-${num}-$(date +%s).txt"
   printf '%s\n' "$body" > "$pfile"
 
-  # Existing workspace for this PR?
-  title_ws="🔧 Fix PR $num $repo"
-  ws=$("$CM" list-workspaces 2>/dev/null | awk -v t="$title_ws" '{id=$1; if ($1=="*") id=$2; line=$0; sub(/^[* ] *[^ ]+ +/,"",line); sub(/ +\[selected\]$/,"",line); if (line==t) {print id; exit}}')
+  # Existing workspace for this PR? Look it up by the id saved when it was opened
+  # (the name follows the PR title, which can change), then by name, including the
+  # old "🔧 Fix PR <num> <repo>" name of workspaces opened before the rename.
+  title_ws="🔧 [$repo] $title"
+  wsfile="$WS_DIR/${owner}__${repo}__${num}"
+  saved=$(cat "$wsfile" 2>/dev/null)
+  ws=$("$CM" list-workspaces 2>/dev/null | awk -v s="$saved" -v t="$title_ws" -v o="🔧 Fix PR $num $repo" '{id=$1; if ($1=="*") id=$2; line=$0; sub(/^[* ] *[^ ]+ +/,"",line); sub(/ +\[selected\]$/,"",line); if (id==s || line==t || line==o) {print id; exit}}')
 
   wt="$WT_ROOT/${repo}-${num}"
   repo_dir="$REPOS_DIR/$repo"
@@ -141,6 +146,7 @@ Fix these in the worktree on the PR branch. Run \`git fetch origin\` first and r
   if [ -z "$started" ]; then log "failed to dispatch $ref; will retry next run"; continue; fi
 
   printf '%s\n' "$new" | jq -r '.key' >> "$hfile"
+  [ -n "${ws:-}" ] && echo "$ws" > "$wsfile"
   [ -n "${ws:-}" ] && "$CM" set-status pr_fixer "fixing: $summary" --icon wrench --color "#ff3b30" --priority 95 --workspace "$ws" >/dev/null 2>&1
   "$CM" notify --title "PR needs fixes: $repo #$num" --body "$summary" ${ws:+--workspace "$ws"} >/dev/null 2>&1
   osascript -e "display notification \"${summary//\"/\\\"}\" with title \"PR needs fixes: $repo #$num\" subtitle \"Claude fixer: $started\"" >/dev/null 2>&1
