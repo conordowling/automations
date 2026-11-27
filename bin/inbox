@@ -1,0 +1,36 @@
+#!/bin/bash
+# The inbox CLI (see docs/plans/2026-11-27-inbox-design.md).
+#   inbox open [--port N]   focus the pinned 📥 Inbox workspace, creating it if needed
+# Read to the end before running, so editing this file mid-run can't break the run.
+{
+set -u
+export CMUX_QUIET=1
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+CM=/Applications/cmux.app/Contents/Resources/bin/cmux
+NAME="📥 Inbox"
+
+cmd_open() {
+  local port=${INBOX_PORT:-8765}
+  [ "${1:-}" = "--port" ] && port=$2
+  export CMUX_SOCKET_PATH
+  CMUX_SOCKET_PATH=$(cat "$HOME/Library/Application Support/cmux/last-socket-path" 2>/dev/null)
+  "$CM" ping >/dev/null 2>&1 || { echo "cmux not reachable" >&2; return 1; }
+  local ws
+  ws=$("$CM" workspace list 2>/dev/null | awk -v t="$NAME" '{id=$1; if ($1=="*") id=$2; line=$0; sub(/^[* ] *[^ ]+ +/,"",line); sub(/ +\[selected\]$/,"",line); if (line==t) {print id; exit}}')
+  if [ -z "$ws" ]; then
+    local layout out
+    layout=$(jq -nc --arg url "http://localhost:$port/" '{pane:{surfaces:[{type:"browser",url:$url}]}}')
+    out=$("$CM" new-workspace --name "$NAME" --layout "$layout" --focus true 2>&1) || { echo "$out" >&2; return 1; }
+    ws=$(echo "$out" | awk '/^OK/ {print $2}')
+    "$CM" workspace-action --workspace "$ws" --action pin >/dev/null 2>&1
+    "$CM" workspace-action --workspace "$ws" --action move-top >/dev/null 2>&1
+  fi
+  "$CM" workspace select "$ws" >/dev/null
+}
+
+case ${1:-} in
+  open) shift; cmd_open "$@" ;;
+  *) echo "usage: inbox open [--port N]" >&2; exit 2 ;;
+esac
+exit
+}

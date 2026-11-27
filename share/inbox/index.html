@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inbox</title>
+<style>
+:root {
+  --bg: #f6f6f4; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0;
+  --accent: #0a66d8; --red: #d1242f; --amber: #b7791f; --green: #1a7f37; --unread: #eef4ff;
+  --chip: #efefec;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161618; --card: #1f1f22; --text: #ececee; --muted: #9a9aa1; --line: #2e2e33;
+    --accent: #5aa2ff; --red: #ff6b6b; --amber: #e0a64a; --green: #4cc26b; --unread: #1d2a3d;
+    --chip: #2a2a2e;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--accent); }
+header { position: sticky; top: 0; z-index: 2; background: var(--bg);
+  border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 14px;
+  align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0 6px 0 0; }
+.count { color: var(--muted); }
+.count b { color: var(--text); font-variant-numeric: tabular-nums; }
+.count.hot b { color: var(--red); }
+.fresh { margin-left: auto; color: var(--muted); font-size: 12px; }
+.fresh.err { color: var(--red); }
+#banner { display: none; background: var(--amber); color: #000; padding: 4px 16px; font-size: 12px; }
+main { padding: 12px 16px 40px; max-width: 980px; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 18px 0 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 8px; }
+.card.unread { border-left: 3px solid var(--accent); }
+.top { display: flex; gap: 8px; align-items: baseline; }
+.key { font-weight: 600; white-space: nowrap; }
+.key.none { color: var(--amber); }
+.title { flex: 1; min-width: 0; }
+.status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pr { display: flex; gap: 8px; align-items: center; padding: 3px 0 0 14px; color: var(--muted);
+  font-size: 12px; flex-wrap: wrap; }
+.pr .ref { color: var(--text); font-variant-numeric: tabular-nums; }
+.chip { background: var(--chip); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.dot.SUCCESS { background: var(--green); } .dot.FAILURE, .dot.ERROR { background: var(--red); }
+.dot.PENDING, .dot.EXPECTED { background: var(--amber); }
+.bad { color: var(--red); }
+.events { margin: 6px 0 0 14px; padding: 0; list-style: none; font-size: 12px; }
+.events li { padding: 1px 4px; border-radius: 4px; color: var(--muted); }
+.events li.new { background: var(--unread); color: var(--text); }
+.events .src { font-weight: 600; margin-right: 4px; }
+.events time { float: right; margin-left: 8px; }
+.more { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
+  font-size: 12px; padding: 2px 0 0 18px; }
+.review { display: flex; gap: 8px; align-items: baseline; }
+.review .age { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<div id="banner">Reconnecting to the inbox server…</div>
+<header>
+  <h1>📥 Inbox</h1>
+  <span class="count" id="c-needs"></span>
+  <span class="count" id="c-reviews"></span>
+  <span class="count" id="c-waiting"></span>
+  <span class="count" id="c-ticket"></span>
+  <span class="fresh" id="fresh"></span>
+</header>
+<main id="main"></main>
+<script>
+"use strict";
+const SECTIONS = [
+  ["needs_you", "Needs you"], ["reviews", "Review requests"], ["waiting", "Waiting on others"],
+  ["draft", "Drafts"], ["done", "Done (last 3 days)"],
+];
+const expanded = new Set();
+let shortNames = {};
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function shortRef(pr) {
+  const [repo, num] = pr.ref.split("#");
+  return `${shortNames[repo] || repo}#${num}`;
+}
+
+function prRow(pr) {
+  const bits = [el("span", { class: `dot ${pr.ci}`, title: `CI ${pr.ci.toLowerCase()}` }),
+    el("a", { class: "ref", href: pr.url, text: shortRef(pr) })];
+  const state = pr.state === "open" ? (pr.is_draft ? "draft" : "open") : pr.state;
+  bits.push(el("span", { class: "chip", text: state }));
+  if (pr.state === "open") {
+    if (pr.review_decision === "CHANGES_REQUESTED") bits.push(el("span", { class: "bad", text: "changes requested" }));
+    else if (pr.review_decision === "APPROVED") bits.push(el("span", { text: "approved" }));
+    if (pr.unresolved) bits.push(el("span", { class: "bad", text: `${pr.unresolved} unresolved` }));
+    if (pr.bot_unresolved) bits.push(el("span", { class: "chip", text: `${pr.bot_unresolved} bot thread${pr.bot_unresolved > 1 ? "s" : ""}` }));
+    if (pr.ci === "FAILURE" || pr.ci === "ERROR") bits.push(el("span", { class: "bad", text: "CI failing" }));
+  }
+  if (pr.workstream.startsWith("pr:") === false) bits.push(el("span", { class: "title", text: shortTitle(pr.title) }));
+  return el("div", { class: "pr" }, ...bits);
+}
+
+function shortTitle(t) { return t.replace(/^\[?[A-Z][A-Z0-9]*-[A-Z0-9]+\]?:?\s*/, "") || t; }
+
+function card(w) {
+  const noTicket = w.key.startsWith("pr:");
+  const keyText = noTicket ? "no ticket" : w.key;
+  const key = w.linear_url ? el("a", { class: "key", href: w.linear_url, text: keyText })
+    : el("span", { class: `key${noTicket ? " none" : ""}`, text: keyText });
+  const top = el("div", { class: "top" }, key, el("span", { class: "title", text: w.title }),
+    el("span", { class: "status", text: w.linear_status || ago(w.updated_at) }));
+  const c = el("div", { class: `card${w.unread ? " unread" : ""}`, "data-key": w.key }, top);
+  for (const pr of w.prs) c.append(prRow(pr));
+  if (w.events.length) {
+    const open = expanded.has(w.key);
+    const ul = el("ul", { class: "events" });
+    const lastHour = Date.now() - 3600e3;
+    for (const e of (open ? w.events : w.events.slice(0, 3))) {
+      const isNew = !e.read && Date.parse(e.created_at) > lastHour;
+      ul.append(el("li", { class: isNew ? "new" : "" }, el("time", { text: ago(e.created_at) }),
+        el("span", { class: "src", text: e.source }), e.pr_ref ? `${shortRef({ ref: e.pr_ref })} · ` : "", e.text));
+    }
+    c.append(ul);
+    if (w.events.length > 3) c.append(el("button", { class: "more", text: open ? "show less" : `show all ${w.events.length}`,
+      onclick: () => { open ? expanded.delete(w.key) : expanded.add(w.key); render(lastState); } }));
+  }
+  return c;
+}
+
+function reviewCard(r) {
+  return el("div", { class: "card review" },
+    el("a", { class: "key", href: r.url, text: shortRef(r) }),
+    el("span", { class: "title", text: r.title }),
+    el("span", { class: "age", text: `${r.author} · +${r.additions}/−${r.deletions} · ${ago(r.created_at)}` }));
+}
+
+function setCount(id, n, label, hot) {
+  const e = document.getElementById(id);
+  e.replaceChildren(el("b", { text: String(n) }), ` ${label}`);
+  e.classList.toggle("hot", hot && n > 0);
+}
+
+let lastState = null;
+function render(s) {
+  lastState = s;
+  shortNames = s.short_names || {};
+  const by = {};
+  for (const w of s.workstreams) (by[w.bucket] ||= []).push(w);
+  setCount("c-needs", (by.needs_you || []).length, "need you", true);
+  setCount("c-reviews", s.reviews.length, "reviews", true);
+  setCount("c-waiting", (by.waiting || []).length, "waiting", false);
+  setCount("c-ticket", s.workstreams.filter(w => w.key.startsWith("pr:") && w.bucket !== "done").length, "need a ticket", false);
+  const m = s.meta, fresh = document.getElementById("fresh");
+  fresh.textContent = m.gh_error ? `GitHub stale since ${ago(m.gh_error_since)}: ${m.gh_error}`
+    : `GitHub ${ago(m.gh_synced_at) || "not synced yet"}`;
+  fresh.classList.toggle("err", !!m.gh_error);
+
+  const y = window.scrollY, main = document.getElementById("main");
+  main.replaceChildren();
+  for (const e of s.inbox_events || []) main.append(el("div", { class: "card unread" }, el("span", { class: "bad", text: e.text })));
+  for (const [id, label] of SECTIONS) {
+    const items = id === "reviews" ? s.reviews : (by[id] || []);
+    if (!items.length && id !== "needs_you") continue;
+    main.append(el("h2", { text: `${label} · ${items.length}` }));
+    if (!items.length) main.append(el("div", { class: "empty", text: "Nothing needs you." }));
+    for (const it of items) main.append(id === "reviews" ? reviewCard(it) : card(it));
+  }
+  window.scrollTo(0, y);
+}
+
+// Poll with an ETag: the server answers 304 until something changes. (cmux's WebKit
+// browser buffers server-sent events, so they don't arrive live.)
+let etag = null;
+async function poll() {
+  const banner = document.getElementById("banner");
+  try {
+    const r = await fetch("/api/state", { cache: "no-cache", headers: etag ? { "If-None-Match": etag } : {} });
+    banner.style.display = "none";
+    if (r.status === 200) { etag = r.headers.get("ETag"); render(await r.json()); }
+  } catch (e) {
+    banner.style.display = "block";
+  }
+  setTimeout(poll, 2000);
+}
+poll();
+setInterval(() => lastState && render(lastState), 60e3);  // keep "5m ago" labels current
+</script>
+</body>
+</html>
